@@ -38,9 +38,18 @@ pub fn preprocess_session(
     project_dir_name: &str,
     config: &ReconcileConfig,
     is_aside: bool,
+    byte_offset: u64,
 ) -> Result<Vec<ConversationChunk>> {
-    let file = std::fs::File::open(path)
+    let mut file = std::fs::File::open(path)
         .with_context(|| format!("failed to open session: {}", path.display()))?;
+
+    // Skip to the byte offset — only process new content since last run.
+    // JSONL is append-only, so everything before the offset has been processed.
+    if byte_offset > 0 {
+        use std::io::Seek;
+        file.seek(std::io::SeekFrom::Start(byte_offset))?;
+    }
+
     let reader = std::io::BufReader::new(file);
 
     let mut turns: Vec<Turn> = Vec::new();
@@ -86,7 +95,10 @@ pub fn preprocess_session(
     }
 
     // Gate by minimum human turns (aside sessions bypass this)
-    if !is_aside && human_turn_count < config.min_human_turns {
+    // Skip sessions with too few human turns — but only on first processing.
+    // Incremental runs (byte_offset > 0) may have fewer turns in the new content;
+    // the session already passed the gate on the initial run.
+    if !is_aside && byte_offset == 0 && human_turn_count < config.min_human_turns {
         return Ok(vec![]);
     }
 

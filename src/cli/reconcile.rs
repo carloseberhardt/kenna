@@ -74,6 +74,7 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
                 &session.project_dir_name,
                 &config.reconcile,
                 session.is_aside,
+                0, // dry-run always processes from start
             )?;
             if chunks.is_empty() {
                 skipped += 1;
@@ -130,12 +131,14 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
             continue;
         }
 
+        let byte_offset = cursor.byte_offset(&session.path);
         let chunks = preprocess_session(
             &session.path,
             &session.session_id,
             &session.project_dir_name,
             &config.reconcile,
             session.is_aside,
+            byte_offset,
         )?;
 
         if chunks.is_empty() {

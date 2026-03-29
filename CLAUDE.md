@@ -130,6 +130,19 @@ Oversized paragraphs (no `\n\n` breaks) are force-split on single newlines.
 Multi-array JSON responses (Gemma sometimes outputs `[...][...]`) are parsed by
 bracket-depth counting in `parse_extraction_response()`.
 
+### Inference performance tuning
+
+Context size is 8192 (down from 16384) — sufficient for system prompt + few-shot +
+4K chunk + output headroom, uses half the KV cache VRAM. Batch size is 2048 for
+faster prompt prefill (long prompts relative to short outputs).
+
+**Future investigation if speed becomes a concern:**
+- Flash attention on ROCm/RDNA3 (`GGML_HIP_ROCWMMA_FATTN=ON`) — may help at
+  longer contexts but has been hit-or-miss on consumer RDNA3 cards
+- CPU thread count for nomic-embed — should match physical cores (6 on Ryzen)
+- Quantization tradeoffs — Gemma Q8_0 for better extraction quality (fits in VRAM),
+  Qwen Q4_K_S for faster curation if quality is sufficient
+
 ### Rust 2024 edition
 
 `gen` is a reserved keyword — cannot be used as a variable name.

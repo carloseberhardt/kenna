@@ -24,8 +24,12 @@ pub struct LlamaConfig {
     pub embedding_model_path: Option<String>,
     /// Number of GPU layers to offload (0 = CPU only).
     pub n_gpu_layers: u32,
-    /// Context size for generation.
+    /// Context size for generation. Smaller = less VRAM for KV cache = faster.
+    /// Should be large enough for: system prompt + few-shot + chunk + output headroom.
     pub generation_ctx_size: u32,
+    /// Batch size for prompt processing. Larger = faster prefill for long prompts.
+    /// Doesn't affect generation speed, but our prompts are large relative to outputs.
+    pub n_batch: u32,
 }
 
 impl Default for LlamaConfig {
@@ -34,7 +38,8 @@ impl Default for LlamaConfig {
             generation_model_path: None,
             embedding_model_path: None,
             n_gpu_layers: 99,
-            generation_ctx_size: 16384,
+            generation_ctx_size: 8192,
+            n_batch: 2048,
         }
     }
 }
@@ -104,7 +109,7 @@ impl LlamaBackend {
         let gen_ctx = if let Some(ref model) = generation_model {
             let ctx_params = LlamaContextParams::default()
                 .with_n_ctx(NonZeroU32::new(config.generation_ctx_size))
-                .with_n_batch(config.generation_ctx_size)
+                .with_n_batch(config.n_batch)
                 .with_embeddings(false);
             // SAFETY: model lives in the same struct as the context.
             let model_ref: &'static LlamaModel = unsafe { &*(model as *const LlamaModel) };

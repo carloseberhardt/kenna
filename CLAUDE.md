@@ -156,6 +156,7 @@ is used instead of the integrated GPU (Raphael). This is set before model loadin
 
 ```
 engram reconcile [--dry-run] [--limit N] [--model file.gguf] [--session ID_PREFIX]
+engram settle [--dry-run]   # Cross-project promotion + entity synthesis
 engram serve                # MCP server on stdio
 engram list [--pending] [--scope personal|project] [--category X] [--entity X]
 engram show <id>            # UUID prefix match supported

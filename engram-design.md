@@ -307,6 +307,111 @@ We skip: `agent-acompact-*`, `agent-aprompt_suggestion-*`, and generic
 
 ---
 
+## Settling Pass
+
+The settling pass (`engram settle`) is a periodic, less-frequent process that
+consolidates the engram store. While the reconcile pipeline operates per-session
+in near-real-time, settling operates across the entire store to identify patterns
+that only emerge over time.
+
+Informed by two research papers:
+
+- **RGMem** (Oct 2025, [arxiv.org/abs/2510.16392](https://arxiv.org/abs/2510.16392)) —
+  Memory should evolve across scales: individual facts consolidate into user traits
+  through "hierarchical coarse-graining." Key insight applied: a pattern doesn't get
+  promoted to a higher abstraction level until it crosses a stability threshold —
+  appearing in N distinct *projects*, not N engrams within one project.
+
+- **Hindsight** (Dec 2025, [arxiv.org/abs/2512.12818](https://arxiv.org/abs/2512.12818)) —
+  Periodically synthesize entity-level summaries that aggregate multiple facts about
+  the same topic into a coherent narrative. Instead of five atomic engrams about a
+  topic, produce one paragraph. Denser, more contextual, more natural.
+
+A third paper, **LightMem** (Oct 2025, [arxiv.org/abs/2510.18866](https://arxiv.org/abs/2510.18866)),
+validated the two-stage architecture: a "soft" immediate update (our reconciler) and
+a periodic "sleep" deep consolidation (our settling pass). Their finding that this
+beats single-stage inline processing is empirical support for our design.
+
+### Two Operations
+
+**1. Cross-Project Promotion** (RGMem-inspired)
+
+Project-scoped engrams that appear semantically across 3+ distinct projects are
+promoted to personal scope:
+
+- Filter to `scope=Project` engrams
+- Cluster by embedding cosine similarity (>= 0.75) using union-find
+- Count distinct `source_project` per cluster
+- Clusters with 3+ projects → ask Qwen3 to synthesize into a single personal trait
+- New personal engram supersedes the individual project ones
+
+This handles Gemma's inconsistent entity keys — semantic similarity catches
+"prefers simplicity" whether it's tagged `design-philosophy`, `workflow`, or `yagni`.
+
+**2. Entity Summary Synthesis** (Hindsight-inspired)
+
+Entities with 3+ active, non-superseded engrams are consolidated:
+
+- Group by entity key
+- Skip entities that are too broad (> max_cluster_size, default 10) — these need
+  reclassification first (future work)
+- Skip single-session entities (session-specific noise, not patterns)
+- Ask Qwen3 to synthesize, with instructions to filter out trivial, misclassified,
+  and redundant items during synthesis (curation-during-synthesis)
+- New synthesized engram supersedes the individual ones
+
+### Guards
+
+- **Max cluster size** (default 10): Overly broad entities like `workflow` or
+  `communication-style` are skipped rather than producing vague syntheses
+- **Single-session filter**: Entities where all engrams come from one session
+  are skipped (session-specific detail, not a pattern)
+- **Idempotency**: Settled engrams have `source_session = "settling"`. Running
+  settle twice produces "Nothing to settle."
+- **Candidate lifecycle**: All syntheses start as Candidate for human review
+
+### Execution Flow
+
+```
+engram settle [--dry-run]
+  │
+  ├─ Load all non-superseded engrams (no model needed)
+  │
+  ├─ Phase 1: Cross-project clustering (in-memory, existing embeddings)
+  │
+  ├─ Phase 2: Entity grouping (in-memory)
+  │
+  ├─ [dry-run stops here, prints report]
+  │
+  ├─ Phase 3: Synthesis (Qwen3 8B on GPU, 4096 max tokens)
+  │
+  ├─ Phase 4: Embedding (nomic-embed on CPU, same backend instance)
+  │
+  └─ Phase 5: Persist + supersede source engrams
+```
+
+### Configuration
+
+```toml
+[settle]
+min_projects_for_promotion = 3
+min_engrams_for_synthesis = 3
+cluster_cosine_threshold = 0.75
+max_cluster_size = 10
+```
+
+Optional `settling_model` at top level — defaults to `curation_model` but can
+point to a larger model for better synthesis quality.
+
+### Future: Entity Reclassification
+
+Broad entities (`workflow`, `communication-style`) with many engrams should
+be sub-clustered into finer-grained entities before synthesis. This would be
+a pre-step in the settling pass: cluster → reclassify → synthesize → promote.
+Not yet implemented.
+
+---
+
 ## MCP Tool Definition
 
 Engram exposes a single, read-only MCP tool to Claude Code. All write
@@ -350,6 +455,7 @@ Only the latest version of each fact is returned.
 
 ```
 engram reconcile [--dry-run] [--limit N] [--model file.gguf] [--session ID_PREFIX]
+engram settle [--dry-run]     # Cross-project promotion + entity synthesis
 engram serve                  # MCP server on stdio
 engram list [--pending] [--scope personal|project] [--category X] [--entity X]
 engram show <id>              # UUID prefix match supported

@@ -70,6 +70,9 @@ impl EngramDb {
         if let Some(entity) = &filters.entity {
             conditions.push(format!("entity = '{entity}'"));
         }
+        if filters.exclude_superseded {
+            conditions.push("superseded_by IS NULL".to_string());
+        }
 
         let mut query = table.query();
         if !conditions.is_empty() {
@@ -250,6 +253,8 @@ pub struct ListFilters {
     pub lifecycle: Option<Lifecycle>,
     pub entity: Option<String>,
     pub limit: Option<usize>,
+    /// If true, exclude engrams that have been superseded (superseded_by IS NULL).
+    pub exclude_superseded: bool,
 }
 
 #[derive(Debug, Default)]

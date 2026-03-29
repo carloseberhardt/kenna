@@ -18,6 +18,7 @@ pub async fn run(
         lifecycle,
         entity,
         limit: Some(limit),
+        exclude_superseded: false, // we filter superseded in Rust below
     };
 
     let all_engrams = db.list(&filters).await?;

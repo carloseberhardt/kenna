@@ -4,6 +4,7 @@ mod manage;
 mod reconcile;
 mod search;
 mod serve;
+mod settle;
 mod show;
 mod stats;
 
@@ -39,6 +40,12 @@ enum Command {
         /// Process only sessions whose ID starts with this prefix
         #[arg(long)]
         session: Option<String>,
+    },
+    /// Consolidate engrams: cross-project promotion + entity synthesis
+    Settle {
+        /// Preview what would change without making modifications
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Start the MCP server (stdio transport, for Claude Code integration)
     Serve,
@@ -121,6 +128,9 @@ impl Cli {
         match self.command {
             Command::Reconcile { dry_run, limit, model, session } => {
                 reconcile::run(dry_run, limit, model, session).await
+            }
+            Command::Settle { dry_run } => {
+                settle::run(dry_run).await
             }
             Command::Serve => serve::run().await,
             Command::List {

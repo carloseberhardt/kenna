@@ -23,7 +23,10 @@ pub struct Config {
     pub supersession_cosine_max: f32,
     /// Scope confidence below which personal-scoped items are demoted to project.
     pub scope_demotion_threshold: f32,
+    /// Model for settling synthesis. Defaults to curation_model if not set.
+    pub settling_model: Option<String>,
     pub reconcile: ReconcileConfig,
+    pub settle: SettleConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,11 +53,13 @@ impl Default for Config {
             curation_model: "qwen3-8b-q4_k_m.gguf".into(),
             embedding_model: "nomic-embed-text-v1.5.Q8_0.gguf".into(),
             embedding_dimensions: 768,
+            settling_model: None,
             dedup_cosine_threshold: 0.85,
             supersession_cosine_min: 0.7,
             supersession_cosine_max: 0.85,
             scope_demotion_threshold: 0.75,
             reconcile: ReconcileConfig::default(),
+            settle: SettleConfig::default(),
         }
     }
 }
@@ -66,6 +71,30 @@ impl Default for ReconcileConfig {
             min_human_turns: 4,
             chunk_max_tokens: 4000,
             chunk_overlap_tokens: 200,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct SettleConfig {
+    /// Minimum distinct projects for a project-scoped pattern to be promoted to personal.
+    pub min_projects_for_promotion: usize,
+    /// Minimum non-superseded engrams under an entity to trigger synthesis.
+    pub min_engrams_for_synthesis: usize,
+    /// Cosine similarity threshold for cross-project clustering.
+    pub cluster_cosine_threshold: f32,
+    /// Maximum cluster size to prevent chaining artifacts.
+    pub max_cluster_size: usize,
+}
+
+impl Default for SettleConfig {
+    fn default() -> Self {
+        Self {
+            min_projects_for_promotion: 3,
+            min_engrams_for_synthesis: 3,
+            cluster_cosine_threshold: 0.75,
+            max_cluster_size: 10,
         }
     }
 }

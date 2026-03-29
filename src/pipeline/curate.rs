@@ -202,7 +202,7 @@ pub fn truncate_str(s: &str, max: usize) -> &str {
 /// Strip Qwen3-style `<think>...</think>` blocks from the response.
 /// The thinking model generates chain-of-thought before the JSON output,
 /// and this block often contains brackets that confuse the JSON parser.
-fn strip_thinking_block(text: &str) -> &str {
+pub(crate) fn strip_thinking_block(text: &str) -> &str {
     // Find the end of the thinking block
     if let Some(end) = text.find("</think>") {
         let after = &text[end + "</think>".len()..];

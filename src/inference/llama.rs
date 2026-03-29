@@ -59,6 +59,13 @@ struct GenerationCtx {
 
 impl LlamaBackend {
     pub fn new(config: LlamaConfig) -> Result<Self> {
+        // Suppress llama.cpp's verbose log output unless we're at debug level.
+        // Must be called before LlamaInit::init().
+        let show_llama_logs = tracing::enabled!(tracing::Level::DEBUG);
+        llama_cpp_2::send_logs_to_tracing(
+            llama_cpp_2::LogOptions::default().with_logs_enabled(show_llama_logs)
+        );
+
         let init = LlamaInit::init().context("failed to initialize llama.cpp backend")?;
 
         // Ensure ROCm uses the discrete GPU (device 0 = 7900 XT), not the iGPU

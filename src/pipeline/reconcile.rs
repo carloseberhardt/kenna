@@ -81,7 +81,7 @@ async fn reconcile_one(
     // Demote personal → project when scope confidence is low.
     // False-personal is expensive (wrong facts surfaced globally);
     // false-project is cheap (just means a fact stays project-local).
-    if scope == Scope::Personal && candidate.scope_confidence < 0.75 {
+    if scope == Scope::Personal && candidate.scope_confidence < config.scope_demotion_threshold {
         tracing::info!(
             "Demoting to project scope (scope_confidence={:.2}): {}",
             candidate.scope_confidence,
@@ -109,11 +109,11 @@ async fn reconcile_one(
     // 3. Embed the content
     let embedding = backend.embed(&candidate.content)?;
 
-    // 4. Check for duplicates via vector search (cosine > 0.85)
+    // 4. Check for duplicates via vector search
     let similar = db.vector_search(embedding.clone(), 1, None).await?;
     if let Some(existing) = similar.first() {
         let similarity = cosine_similarity(&embedding, &existing.embedding);
-        if similarity > 0.85 {
+        if similarity > config.dedup_cosine_threshold {
             tracing::debug!(
                 "Duplicate detected (similarity={similarity:.3}): {:?} ≈ {:?}",
                 &candidate.content[..candidate.content.len().min(50)],
@@ -146,7 +146,7 @@ async fn reconcile_one(
                 continue;
             }
             let similarity = cosine_similarity(&embedding, &existing.embedding);
-            if similarity >= 0.7 && similarity < 0.85 {
+            if similarity >= config.supersession_cosine_min && similarity < config.supersession_cosine_max {
                 tracing::info!(
                     "Superseding engram {} (entity={entity}, similarity={similarity:.3}): \"{}\" → \"{}\"",
                     &existing.id.to_string()[..8],

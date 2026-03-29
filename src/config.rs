@@ -6,12 +6,23 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Default log level: "error", "warn", "info", "debug", "trace".
+    /// Overridden by RUST_LOG environment variable if set.
+    pub log_level: String,
     pub confidence_drop_threshold: f32,
     pub confidence_auto_accept_threshold: f32,
     pub extraction_model: String,
     pub curation_model: String,
     pub embedding_model: String,
     pub embedding_dimensions: usize,
+    /// Cosine similarity above which two engrams are considered duplicates.
+    pub dedup_cosine_threshold: f32,
+    /// Cosine similarity range for supersession (same entity, updated claim).
+    /// Min: lower bound (below this, facts coexist). Max: upper bound (above this, it's a duplicate).
+    pub supersession_cosine_min: f32,
+    pub supersession_cosine_max: f32,
+    /// Scope confidence below which personal-scoped items are demoted to project.
+    pub scope_demotion_threshold: f32,
     pub reconcile: ReconcileConfig,
 }
 
@@ -32,12 +43,17 @@ pub struct ReconcileConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            log_level: "warn".into(),
             confidence_drop_threshold: 0.6,
             confidence_auto_accept_threshold: 0.85,
             extraction_model: "gemma-3-4b-it-Q6_K.gguf".into(),
             curation_model: "qwen3-8b-q4_k_m.gguf".into(),
             embedding_model: "nomic-embed-text-v1.5.Q8_0.gguf".into(),
             embedding_dimensions: 768,
+            dedup_cosine_threshold: 0.85,
+            supersession_cosine_min: 0.7,
+            supersession_cosine_max: 0.85,
+            scope_demotion_threshold: 0.75,
             reconcile: ReconcileConfig::default(),
         }
     }

@@ -391,8 +391,12 @@ fn format_conversation(turns: &[Turn]) -> String {
 
 /// Approximate token count using word-based heuristic (~1.3 tokens per word).
 fn approx_token_count(text: &str) -> usize {
-    let words = text.split_whitespace().count();
-    (words as f64 * 1.3) as usize
+    // Use chars/4 as a conservative estimate. The word-based estimate (words * 1.3)
+    // severely undercounts for paths, UUIDs, base64, and other non-prose content
+    // that tokenizes into many subword pieces per whitespace-delimited "word".
+    // chars/4 is the standard rough estimate and errs on the side of smaller chunks,
+    // which is safer than overflowing the model's context.
+    text.len() / 4
 }
 
 /// Split text into chunks of approximately max_tokens, with overlap.
@@ -426,6 +430,47 @@ fn chunk_text(
 
     for para in &paragraphs {
         let para_tokens = approx_token_count(para);
+
+        // Guard: if a single paragraph exceeds max_tokens, force-split it
+        // on single newlines. This handles huge tool outputs, base64 blobs, etc.
+        if para_tokens > max_tokens {
+            // Emit current chunk first if non-empty
+            if !current_chunk.is_empty() {
+                chunks.push(ConversationChunk {
+                    session_id: session_id.to_string(),
+                    project_dir_name: project_dir_name.to_string(),
+                    chunk_index,
+                    text: current_chunk.clone(),
+                    approx_tokens: current_tokens,
+                });
+                chunk_index += 1;
+                current_chunk.clear();
+                current_tokens = 0;
+            }
+
+            // Split the oversized paragraph on single newlines
+            let lines: Vec<&str> = para.split('\n').collect();
+            for line in &lines {
+                let line_tokens = approx_token_count(line);
+                if current_tokens + line_tokens > max_tokens && !current_chunk.is_empty() {
+                    chunks.push(ConversationChunk {
+                        session_id: session_id.to_string(),
+                        project_dir_name: project_dir_name.to_string(),
+                        chunk_index,
+                        text: current_chunk.clone(),
+                        approx_tokens: current_tokens,
+                    });
+                    chunk_index += 1;
+                    current_chunk.clear();
+                    current_tokens = 0;
+                }
+                current_chunk.push_str(line);
+                current_chunk.push('\n');
+                current_tokens += line_tokens;
+            }
+            recent_paragraphs.clear();
+            continue;
+        }
 
         if current_tokens + para_tokens > max_tokens && !current_chunk.is_empty() {
             // Emit current chunk

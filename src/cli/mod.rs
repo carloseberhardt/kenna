@@ -36,6 +36,9 @@ enum Command {
         /// Override extraction model GGUF filename (in models dir)
         #[arg(long)]
         model: Option<String>,
+        /// Process only sessions whose ID starts with this prefix
+        #[arg(long)]
+        session: Option<String>,
     },
     /// Start the MCP server (stdio transport, for Claude Code integration)
     Serve,
@@ -116,8 +119,8 @@ impl Cli {
         let db = EngramDb::open(&Config::db_path()).await?;
 
         match self.command {
-            Command::Reconcile { dry_run, limit, model } => {
-                reconcile::run(dry_run, limit, model).await
+            Command::Reconcile { dry_run, limit, model, session } => {
+                reconcile::run(dry_run, limit, model, session).await
             }
             Command::Serve => serve::run().await,
             Command::List {

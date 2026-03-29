@@ -374,6 +374,32 @@ impl InferenceBackend for LlamaBackend {
         self.generate_with_grammar(&formatted, max_tokens)
     }
 
+    fn generate_chat_multi(
+        &self,
+        messages: &[super::ChatMessage],
+        max_tokens: u32,
+    ) -> Result<String> {
+        let gen_model = self
+            .generation_model
+            .as_ref()
+            .context("generation model not loaded")?;
+
+        let chat_messages: Vec<LlamaChatMessage> = messages.iter()
+            .map(|m| LlamaChatMessage::new(m.role.clone(), m.content.clone())
+                .map_err(|e| anyhow::anyhow!("chat message error: {e}")))
+            .collect::<Result<Vec<_>>>()?;
+
+        let template = gen_model
+            .chat_template(None)
+            .map_err(|e| anyhow::anyhow!("no chat template in model: {e}"))?;
+
+        let formatted = gen_model
+            .apply_chat_template(&template, &chat_messages, true)
+            .map_err(|e| anyhow::anyhow!("chat template failed: {e}"))?;
+
+        self.generate_with_grammar(&formatted, max_tokens)
+    }
+
     fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let embed_model = self
             .embedding_model

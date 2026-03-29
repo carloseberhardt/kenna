@@ -6,28 +6,32 @@ use super::extract::ExtractedCandidate;
 /// Curation prompt for the thinking model. It receives both the original
 /// conversation text and the extracted candidates, so it can verify claims
 /// against the source.
-const CURATION_SYSTEM_PROMPT: &str = r#"You are a quality filter for extracted knowledge about a user. You will receive:
+const CURATION_SYSTEM_PROMPT: &str = r#"You are a quality filter for extracted knowledge about a user. These items will be stored in a long-term memory system. When a different AI assistant meets this user for the first time in a new project, these are the things it will know about them.
+
+For each candidate, think carefully: would knowing this actually change how you interact with this person? Would it help you make better assumptions, avoid mistakes, or tailor your approach? If not, drop it — even if it's technically true and supported.
+
+You will receive:
 1. The original conversation text
 2. A list of candidate facts extracted from it
 
-Your job is to verify each candidate against the conversation and decide what to keep.
+Your job is to verify each candidate against the conversation AND judge whether it's worth remembering.
 
 KEEP items that are:
 - Explicitly evidenced by a specific USER statement or action in the conversation. If you cannot point to a concrete user statement that evidences the claim, it is hallucinated — drop it. Absence of contradiction is NOT evidence of support.
 - Durable — would still be true next week
-- Distinctive and specific enough to be useful
+- Genuinely useful — would change how an assistant works with this person
 
 DROP items that are:
 - NOT supported by a specific user statement (hallucinated or inferred from general context)
-- Trivial or generic — things true of nearly all developers. Examples: "uses a keyboard", "has a monitor", "uses a computer", "uses a laptop", "uses the terminal", "has a home directory", "runs commands", "writes code"
-- Too vague or partial to be useful. "Uses a laptop" without model, context, or purpose is not worth storing. "Uses a ThinkPad X1 Carbon as a travel machine" would be. If the claim lacks the specificity that makes it actionable or interesting, drop it.
-- Ephemeral state ("keyboard is working", "build succeeded", "tests pass")
+- Pure project documentation: paths, filenames, config values, build steps, error messages, environment variables. These belong in the project, not in memory about the person.
+- Actions or choices without reasoning. A bare choice tells you nothing about the person — drop it. A choice with reasoning reveals how they think — keep it at project scope. The reasoning is the valuable signal, not the choice itself.
+- Trivial or generic — things true of nearly all developers or that anyone could guess. If you would say the same about a random developer, drop it.
+- Too vague or partial to be useful. If the claim lacks specificity that makes it actionable or interesting, drop it.
+- Ephemeral state (current status, temporary conditions, in-progress work)
+- Session events — things that happened during the conversation but don't reflect a durable trait or preference. Status updates, debugging outcomes, what was removed or added, test results. These are project history, not knowledge about the person.
 - Duplicates or near-duplicates of other items in the batch
 
-FIX SCOPE: if an item is labeled "personal" but is really project-specific, change to "keep_as_project".
-- Example: "Prefers a collapsible sidebar for the event pane" → keep_as_project (about a specific UI in this project, not the user as a person)
-- Example: "Prefers Rust for CLI tools" → keep as personal (spans projects, reflects the user broadly)
-- When in doubt, demote to keep_as_project. False-project is cheap; false-personal is expensive.
+FIX SCOPE: if an item is labeled "personal" but is really project-specific, change to "keep_as_project". Personal means true about the user regardless of which project they are working in. Project-specific UI preferences, architecture decisions, and tooling choices for a particular codebase are project scope. When in doubt, demote to keep_as_project. False-project is cheap; false-personal is expensive.
 
 For each item, respond with one of:
 - "keep" — item is verified and worth storing
@@ -37,7 +41,7 @@ For each item, respond with one of:
 
 Include a short reason for every decision to aid debugging.
 
-Respond with ONLY a JSON array: [{"index": 0, "action": "keep", "reason": "user explicitly stated they use Arch Linux"}, {"index": 1, "action": "drop", "reason": "no user statement supports this claim"}, ...]"#;
+Respond with ONLY a JSON array of objects with "index", "action", and "reason" fields."#;
 
 /// Run the curation pass on a batch of extraction candidates.
 /// The conversation_text is provided so the curation model can verify
@@ -108,7 +112,7 @@ pub fn curate_candidates(
                     let c = &candidates[action.index];
                     tracing::info!(
                         "Curation: keeping: {} (reason: {})",
-                        &c.content[..c.content.len().min(80)],
+                        truncate_str(&c.content, 80),
                         action.reason.as_deref().unwrap_or("none"),
                     );
                     kept.push(candidates[action.index].clone());
@@ -119,7 +123,7 @@ pub fn curate_candidates(
                     let mut c = candidates[action.index].clone();
                     tracing::info!(
                         "Curation: demoting to project: {} (reason: {})",
-                        &c.content[..c.content.len().min(80)],
+                        truncate_str(&c.content, 80),
                         action.reason.as_deref().unwrap_or("none"),
                     );
                     c.scope = "project".to_string();
@@ -130,7 +134,7 @@ pub fn curate_candidates(
                 let c = &candidates[action.index];
                 tracing::info!(
                     "Curation: dropping: {} (reason: {})",
-                    &c.content[..c.content.len().min(80)],
+                    truncate_str(&c.content, 80),
                     action.reason.as_deref().unwrap_or("none"),
                 );
             }
@@ -139,7 +143,7 @@ pub fn curate_candidates(
                 tracing::info!(
                     "Curation: merging into item {}: {} (reason: {})",
                     target,
-                    &c.content[..c.content.len().min(80)],
+                    truncate_str(&c.content, 80),
                     action.reason.as_deref().unwrap_or("none"),
                 );
             }
@@ -174,28 +178,97 @@ struct CurationDecision {
     reason: Option<String>,
 }
 
+/// Truncate a string to at most `max` bytes at a char boundary.
+fn truncate_str(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Strip Qwen3-style `<think>...</think>` blocks from the response.
+/// The thinking model generates chain-of-thought before the JSON output,
+/// and this block often contains brackets that confuse the JSON parser.
+fn strip_thinking_block(text: &str) -> &str {
+    // Find the end of the thinking block
+    if let Some(end) = text.find("</think>") {
+        let after = &text[end + "</think>".len()..];
+        after.trim()
+    } else if text.starts_with("<think>") {
+        // Thinking block started but never closed — model hit token limit
+        // during thinking. Try to find JSON after any obvious boundary.
+        text
+    } else {
+        text
+    }
+}
+
 /// Parse the curation model's response. Falls back to keeping everything
 /// if the response can't be parsed.
 fn parse_curation_response(response: &str, num_candidates: usize) -> Vec<CurationDecision> {
     let trimmed = response.trim();
 
-    let parsed = try_parse_curation(trimmed)
+    // Strip thinking block first — Qwen3 emits <think>...</think> before JSON
+    let without_thinking = strip_thinking_block(trimmed);
+
+    let parsed = try_parse_curation(without_thinking)
         .or_else(|| {
-            let stripped = super::extract::strip_code_fences(trimmed);
+            let stripped = super::extract::strip_code_fences(without_thinking);
             try_parse_curation(&stripped)
         })
         .or_else(|| {
-            let start = trimmed.find('[')?;
-            let end = trimmed.rfind(']')?;
-            try_parse_curation(&trimmed[start..=end])
+            let start = without_thinking.find('[')?;
+            let end = without_thinking.rfind(']')?;
+            try_parse_curation(&without_thinking[start..=end])
         });
 
     match parsed {
-        Some(decisions) => decisions,
+        Some(decisions) => {
+            // Validate that indices are in range
+            let valid: Vec<_> = decisions.into_iter()
+                .filter(|d| {
+                    if d.index >= num_candidates {
+                        tracing::warn!(
+                            "Curation returned out-of-range index {} (max {}), skipping",
+                            d.index, num_candidates - 1,
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+
+            // If we got decisions but they don't cover all candidates,
+            // default uncovered ones to keep
+            if valid.len() < num_candidates {
+                let covered: std::collections::HashSet<usize> = valid.iter().map(|d| d.index).collect();
+                let mut all = valid;
+                for i in 0..num_candidates {
+                    if !covered.contains(&i) {
+                        tracing::debug!("Curation missing decision for index {}, keeping by default", i);
+                        all.push(CurationDecision {
+                            index: i,
+                            action: CurationAction::Keep,
+                            reason: Some("no curation decision for this item, keeping by default".to_string()),
+                        });
+                    }
+                }
+                all
+            } else {
+                valid
+            }
+        }
         None => {
             tracing::warn!(
-                "Curation response unparseable, keeping all candidates: {}",
-                &trimmed[..trimmed.len().min(200)]
+                "Curation response unparseable ({} chars), keeping all {} candidates. First 300 chars: {}",
+                trimmed.len(),
+                num_candidates,
+                &trimmed[..trimmed.len().min(300)]
             );
             (0..num_candidates)
                 .map(|i| CurationDecision {

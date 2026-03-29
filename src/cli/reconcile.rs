@@ -31,7 +31,7 @@ struct SessionExtraction {
     chunks: Vec<ChunkExtraction>,
 }
 
-pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<String>) -> Result<()> {
+pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<String>, session_filter: Option<String>) -> Result<()> {
     let mut config = Config::load()?;
     if let Some(model) = model_override {
         config.extraction_model = model;
@@ -39,7 +39,17 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
 
     // Discover sessions
     let excluded_count = count_excluded_projects(&config.reconcile.exclude_projects)?;
-    let sessions = discover_sessions(&config.reconcile.exclude_projects, limit)?;
+    let mut sessions = discover_sessions(&config.reconcile.exclude_projects, limit)?;
+
+    // Filter to a specific session if requested
+    if let Some(ref prefix) = session_filter {
+        sessions.retain(|s| s.session_id.starts_with(prefix.as_str()));
+        if sessions.is_empty() {
+            println!("No sessions found matching prefix '{prefix}'.");
+            return Ok(());
+        }
+        println!("Filtered to {} session(s) matching '{prefix}'.", sessions.len());
+    }
 
     // Load cursor for incremental processing
     let mut cursor = Cursor::load()?;

@@ -15,14 +15,20 @@ use crate::storage::db::EngramDb;
 
 use crate::pipeline::extract::ExtractedCandidate;
 
+/// Candidates extracted from a single conversation chunk, with source text.
+struct ChunkExtraction {
+    candidates: Vec<ExtractedCandidate>,
+    /// The conversation text from the chunk that produced these candidates.
+    source_text: String,
+}
+
 /// Collected extraction results for a session, pending curation.
 struct SessionExtraction {
     session_id: String,
     project_dir_name: String,
     session_path: std::path::PathBuf,
-    candidates: Vec<ExtractedCandidate>,
-    /// Combined conversation text from all chunks (for curation verification).
-    conversation_text: String,
+    /// Per-chunk extractions — each batch paired with the text that produced it.
+    chunks: Vec<ChunkExtraction>,
 }
 
 pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<String>) -> Result<()> {
@@ -145,13 +151,10 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
             );
         }
 
-        let mut session_candidates = Vec::new();
-        let mut conversation_text = String::new();
+        let mut chunk_extractions = Vec::new();
 
         for chunk in &chunks {
             total_chunks += 1;
-            conversation_text.push_str(&chunk.text);
-            conversation_text.push_str("\n---\n");
 
             let candidates = match extract_from_chunk(&extract_backend, chunk, 2048) {
                 Ok(c) => c,
@@ -164,17 +167,22 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
                     continue;
                 }
             };
-            session_candidates.extend(candidates);
+
+            if !candidates.is_empty() {
+                total_extracted += candidates.len();
+                chunk_extractions.push(ChunkExtraction {
+                    candidates,
+                    source_text: chunk.text.clone(),
+                });
+            }
         }
 
-        if !session_candidates.is_empty() {
-            total_extracted += session_candidates.len();
+        if !chunk_extractions.is_empty() {
             extractions.push(SessionExtraction {
                 session_id: session.session_id.clone(),
                 project_dir_name: session.project_dir_name.clone(),
                 session_path: session.path.clone(),
-                candidates: session_candidates,
-                conversation_text,
+                chunks: chunk_extractions,
             });
         } else {
             cursor.mark_processed(&session.path);
@@ -212,6 +220,7 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
     let num_extractions = extractions.len();
 
     for (i, extraction) in extractions.iter_mut().enumerate() {
+        let total_candidates: usize = extraction.chunks.iter().map(|c| c.candidates.len()).sum();
         if is_interactive {
             let short_id = if extraction.session_id.len() > 8 {
                 &extraction.session_id[..8]
@@ -219,30 +228,34 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
                 &extraction.session_id
             };
             eprint!(
-                "\r[{}/{}] curating {} ({} candidates)    ",
+                "\r[{}/{}] curating {} ({} candidates, {} chunks)    ",
                 i + 1,
                 num_extractions,
                 short_id,
-                extraction.candidates.len(),
+                total_candidates,
+                extraction.chunks.len(),
             );
         }
 
-        let before = extraction.candidates.len();
-        match curate_candidates(
-            &curate_backend,
-            &extraction.candidates,
-            &extraction.conversation_text,
-            4096,
-        ) {
-            Ok(curated) => {
-                total_curated_dropped += before - curated.len();
-                extraction.candidates = curated;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Curation failed for session {}, keeping all: {e}",
-                    extraction.session_id,
-                );
+        // Curate each chunk's candidates against the chunk's own source text
+        for chunk_ext in &mut extraction.chunks {
+            let before = chunk_ext.candidates.len();
+            match curate_candidates(
+                &curate_backend,
+                &chunk_ext.candidates,
+                &chunk_ext.source_text,
+                4096,
+            ) {
+                Ok(curated) => {
+                    total_curated_dropped += before - curated.len();
+                    chunk_ext.candidates = curated;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Curation failed for session {} chunk, keeping all: {e}",
+                        extraction.session_id,
+                    );
+                }
             }
         }
     }
@@ -273,14 +286,20 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
     let mut total_dropped = 0usize;
 
     for extraction in &extractions {
-        if extraction.candidates.is_empty() {
+        let all_candidates: Vec<ExtractedCandidate> = extraction
+            .chunks
+            .iter()
+            .flat_map(|c| c.candidates.clone())
+            .collect();
+
+        if all_candidates.is_empty() {
             cursor.mark_processed(&extraction.session_path);
             cursor.save()?;
             continue;
         }
 
         let outcomes = reconcile_candidates(
-            extraction.candidates.clone(),
+            all_candidates,
             &extraction.session_id,
             &extraction.project_dir_name,
             &db,

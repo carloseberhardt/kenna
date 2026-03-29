@@ -13,25 +13,31 @@ const CURATION_SYSTEM_PROMPT: &str = r#"You are a quality filter for extracted k
 Your job is to verify each candidate against the conversation and decide what to keep.
 
 KEEP items that are:
-- Directly supported by something the USER said or did in the conversation
+- Explicitly evidenced by a specific USER statement or action in the conversation. If you cannot point to a concrete user statement that evidences the claim, it is hallucinated — drop it. Absence of contradiction is NOT evidence of support.
 - Durable — would still be true next week
-- Distinctive — not something true of most developers
+- Distinctive and specific enough to be useful
 
 DROP items that are:
-- NOT supported by the conversation text (hallucinated or inferred)
-- Trivial or generic ("uses the terminal", "runs commands", "has a computer")
-- Ephemeral state ("keyboard is working", "build succeeded")
+- NOT supported by a specific user statement (hallucinated or inferred from general context)
+- Trivial or generic — things true of nearly all developers. Examples: "uses a keyboard", "has a monitor", "uses a computer", "uses a laptop", "uses the terminal", "has a home directory", "runs commands", "writes code"
+- Too vague or partial to be useful. "Uses a laptop" without model, context, or purpose is not worth storing. "Uses a ThinkPad X1 Carbon as a travel machine" would be. If the claim lacks the specificity that makes it actionable or interesting, drop it.
+- Ephemeral state ("keyboard is working", "build succeeded", "tests pass")
 - Duplicates or near-duplicates of other items in the batch
 
-FIX SCOPE: if an item is labeled "personal" but is really about the project, change to "keep_as_project".
+FIX SCOPE: if an item is labeled "personal" but is really project-specific, change to "keep_as_project".
+- Example: "Prefers a collapsible sidebar for the event pane" → keep_as_project (about a specific UI in this project, not the user as a person)
+- Example: "Prefers Rust for CLI tools" → keep as personal (spans projects, reflects the user broadly)
+- When in doubt, demote to keep_as_project. False-project is cheap; false-personal is expensive.
 
 For each item, respond with one of:
 - "keep" — item is verified and worth storing
 - "keep_as_project" — item is valid but should be project scope
-- "drop" — item should not be stored (hallucinated, trivial, or ephemeral)
+- "drop" — item should not be stored
 - "merge:N" — merge with item N (0-indexed) as they say the same thing
 
-Respond with ONLY a JSON array: [{"index": 0, "action": "keep"}, {"index": 1, "action": "drop"}, ...]"#;
+Include a short reason for every decision to aid debugging.
+
+Respond with ONLY a JSON array: [{"index": 0, "action": "keep", "reason": "user explicitly stated they use Arch Linux"}, {"index": 1, "action": "drop", "reason": "no user statement supports this claim"}, ...]"#;
 
 /// Run the curation pass on a batch of extraction candidates.
 /// The conversation_text is provided so the curation model can verify
@@ -56,10 +62,14 @@ pub fn curate_candidates(
     }
 
     // Truncate conversation text if very long — the curation model needs
-    // enough to verify claims but doesn't need every detail
-    let max_conv_chars = 8000;
+    // enough to verify claims but doesn't need every detail.
+    // 24000 chars ≈ 6000 tokens, leaving room for candidates + response
+    // within Qwen3 8B's context window.
+    let max_conv_chars = 24000;
     let conv_text = if conversation_text.len() > max_conv_chars {
-        &conversation_text[..max_conv_chars]
+        // Take from the end — candidates are more likely to reference recent text,
+        // and the first 8000 chars of a long session are often setup/boilerplate.
+        &conversation_text[conversation_text.len() - max_conv_chars..]
     } else {
         conversation_text
     };
@@ -95,6 +105,12 @@ pub fn curate_candidates(
         match action.action {
             CurationAction::Keep => {
                 if !merge_targets.contains(&action.index) {
+                    let c = &candidates[action.index];
+                    tracing::info!(
+                        "Curation: keeping: {} (reason: {})",
+                        &c.content[..c.content.len().min(80)],
+                        action.reason.as_deref().unwrap_or("none"),
+                    );
                     kept.push(candidates[action.index].clone());
                 }
             }
@@ -102,8 +118,9 @@ pub fn curate_candidates(
                 if !merge_targets.contains(&action.index) {
                     let mut c = candidates[action.index].clone();
                     tracing::info!(
-                        "Curation: demoting to project: {}",
+                        "Curation: demoting to project: {} (reason: {})",
                         &c.content[..c.content.len().min(80)],
+                        action.reason.as_deref().unwrap_or("none"),
                     );
                     c.scope = "project".to_string();
                     kept.push(c);
@@ -112,16 +129,18 @@ pub fn curate_candidates(
             CurationAction::Drop => {
                 let c = &candidates[action.index];
                 tracing::info!(
-                    "Curation: dropping: {}",
+                    "Curation: dropping: {} (reason: {})",
                     &c.content[..c.content.len().min(80)],
+                    action.reason.as_deref().unwrap_or("none"),
                 );
             }
             CurationAction::Merge(target) => {
                 let c = &candidates[action.index];
                 tracing::info!(
-                    "Curation: merging into item {}: {}",
+                    "Curation: merging into item {}: {} (reason: {})",
                     target,
                     &c.content[..c.content.len().min(80)],
+                    action.reason.as_deref().unwrap_or("none"),
                 );
             }
         }
@@ -152,6 +171,7 @@ enum CurationAction {
 struct CurationDecision {
     index: usize,
     action: CurationAction,
+    reason: Option<String>,
 }
 
 /// Parse the curation model's response. Falls back to keeping everything
@@ -181,6 +201,7 @@ fn parse_curation_response(response: &str, num_candidates: usize) -> Vec<Curatio
                 .map(|i| CurationDecision {
                     index: i,
                     action: CurationAction::Keep,
+                    reason: Some("curation response unparseable, keeping by default".to_string()),
                 })
                 .collect()
         }
@@ -194,6 +215,9 @@ fn try_parse_curation(text: &str) -> Option<Vec<CurationDecision>> {
     for item in &arr {
         let index = item.get("index")?.as_u64()? as usize;
         let action_str = item.get("action")?.as_str()?;
+        let reason = item.get("reason")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         let action = if action_str == "keep" {
             CurationAction::Keep
@@ -208,7 +232,7 @@ fn try_parse_curation(text: &str) -> Option<Vec<CurationDecision>> {
             CurationAction::Keep
         };
 
-        decisions.push(CurationDecision { index, action });
+        decisions.push(CurationDecision { index, action, reason });
     }
 
     Some(decisions)

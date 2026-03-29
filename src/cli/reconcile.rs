@@ -2,7 +2,6 @@ use anyhow::Result;
 
 use crate::config::Config;
 use crate::inference::llama::LlamaBackend;
-use crate::inference::InferenceBackend;
 use crate::pipeline::curate::curate_candidates;
 use crate::pipeline::discover::{
     count_excluded_projects, discover_sessions, print_discovery_summary,

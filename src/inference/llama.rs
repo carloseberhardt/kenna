@@ -12,8 +12,9 @@ use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
 
 use super::InferenceBackend;
 
-/// GBNF grammar constraining output to a valid JSON array.
-const ENGRAM_JSON_GRAMMAR: &str = "root ::= \"hello\"\n";
+// GBNF grammar placeholder — crashes with llama-cpp-2 0.1.140 on ROCm.
+// See CLAUDE.md "GBNF grammar sampling crashes" for details.
+// const ENGRAM_JSON_GRAMMAR: &str = "root ::= \"hello\"\n";
 
 /// Configuration for the Llama backend.
 pub struct LlamaConfig {
@@ -411,7 +412,7 @@ impl InferenceBackend for LlamaBackend {
             .map_err(|e| anyhow::anyhow!("tokenization failed: {e}"))?;
 
         let n_tokens = tokens.len();
-        let n_embd = embed_model.n_embd() as usize;
+        let _n_embd = embed_model.n_embd() as usize;
 
         // Try safe API first (works with ROCm, crashes with Vulkan on BERT models).
         // Creates a fresh context per call since BERT contexts are lightweight.

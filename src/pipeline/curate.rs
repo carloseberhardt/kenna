@@ -93,10 +93,28 @@ pub fn curate_candidates(
     let mut kept = Vec::new();
     let mut merge_targets: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
-    // First pass: identify merge targets
+    // First pass: resolve merges — for each merge pair, keep the higher-confidence one.
+    // Build a set of indices that should be skipped (the losing side of each merge).
     for action in &actions {
-        if let CurationAction::Merge(_) = action.action {
-            merge_targets.insert(action.index);
+        if let CurationAction::Merge(target) = action.action {
+            if action.index < candidates.len() && target < candidates.len() {
+                let source = &candidates[action.index];
+                let dest = &candidates[target];
+                // Keep the higher-confidence one, drop the other
+                let (keep_idx, drop_idx) = if source.confidence >= dest.confidence {
+                    (action.index, target)
+                } else {
+                    (target, action.index)
+                };
+                merge_targets.insert(drop_idx);
+                tracing::info!(
+                    "Curation: merge — keeping \"{}\" (conf={:.2}), dropping \"{}\" (conf={:.2})",
+                    truncate_str(&candidates[keep_idx].content, 50),
+                    candidates[keep_idx].confidence,
+                    truncate_str(&candidates[drop_idx].content, 50),
+                    candidates[drop_idx].confidence,
+                );
+            }
         }
     }
 
@@ -105,44 +123,35 @@ pub fn curate_candidates(
         if action.index >= candidates.len() {
             continue;
         }
+        // Skip items that lost a merge
+        if merge_targets.contains(&action.index) {
+            continue;
+        }
 
         match action.action {
-            CurationAction::Keep => {
-                if !merge_targets.contains(&action.index) {
-                    let c = &candidates[action.index];
-                    tracing::info!(
-                        "Curation: keeping: {} (reason: {})",
-                        truncate_str(&c.content, 80),
-                        action.reason.as_deref().unwrap_or("none"),
-                    );
-                    kept.push(candidates[action.index].clone());
-                }
+            CurationAction::Keep | CurationAction::Merge(_) => {
+                let c = &candidates[action.index];
+                tracing::info!(
+                    "Curation: keeping: {} (reason: {})",
+                    truncate_str(&c.content, 80),
+                    action.reason.as_deref().unwrap_or("none"),
+                );
+                kept.push(candidates[action.index].clone());
             }
             CurationAction::KeepAsProject => {
-                if !merge_targets.contains(&action.index) {
-                    let mut c = candidates[action.index].clone();
-                    tracing::info!(
-                        "Curation: demoting to project: {} (reason: {})",
-                        truncate_str(&c.content, 80),
-                        action.reason.as_deref().unwrap_or("none"),
-                    );
-                    c.scope = "project".to_string();
-                    kept.push(c);
-                }
+                let mut c = candidates[action.index].clone();
+                tracing::info!(
+                    "Curation: demoting to project: {} (reason: {})",
+                    truncate_str(&c.content, 80),
+                    action.reason.as_deref().unwrap_or("none"),
+                );
+                c.scope = "project".to_string();
+                kept.push(c);
             }
             CurationAction::Drop => {
                 let c = &candidates[action.index];
                 tracing::info!(
                     "Curation: dropping: {} (reason: {})",
-                    truncate_str(&c.content, 80),
-                    action.reason.as_deref().unwrap_or("none"),
-                );
-            }
-            CurationAction::Merge(target) => {
-                let c = &candidates[action.index];
-                tracing::info!(
-                    "Curation: merging into item {}: {} (reason: {})",
-                    target,
                     truncate_str(&c.content, 80),
                     action.reason.as_deref().unwrap_or("none"),
                 );
@@ -179,7 +188,7 @@ struct CurationDecision {
 }
 
 /// Truncate a string to at most `max` bytes at a char boundary.
-fn truncate_str(s: &str, max: usize) -> &str {
+pub fn truncate_str(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
     }
@@ -309,4 +318,91 @@ fn try_parse_curation(text: &str) -> Option<Vec<CurationDecision>> {
     }
 
     Some(decisions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_str_ascii() {
+        assert_eq!(truncate_str("hello world", 5), "hello");
+        assert_eq!(truncate_str("hello", 10), "hello");
+        assert_eq!(truncate_str("", 5), "");
+    }
+
+    #[test]
+    fn test_truncate_str_multibyte() {
+        // Em-dash is 3 bytes (UTF-8: e2 80 94)
+        let s = "hello\u{2014}world";
+        // Cutting at 6 would land inside the em-dash — should back up
+        let result = truncate_str(s, 6);
+        assert_eq!(result, "hello");
+        // Cutting at 8 lands after the em-dash
+        let result = truncate_str(s, 8);
+        assert_eq!(result, "hello\u{2014}");
+    }
+
+    #[test]
+    fn test_strip_thinking_block() {
+        let input = "<think>some reasoning here</think>\n[{\"index\": 0}]";
+        assert_eq!(strip_thinking_block(input), "[{\"index\": 0}]");
+    }
+
+    #[test]
+    fn test_strip_thinking_block_no_thinking() {
+        let input = "[{\"index\": 0}]";
+        assert_eq!(strip_thinking_block(input), "[{\"index\": 0}]");
+    }
+
+    #[test]
+    fn test_strip_thinking_block_unclosed() {
+        // Thinking block started but never closed — model hit token limit
+        let input = "<think>reasoning that never ends...";
+        assert_eq!(strip_thinking_block(input), input);
+    }
+
+    #[test]
+    fn test_parse_curation_basic() {
+        let input = r#"[{"index": 0, "action": "keep", "reason": "good"}, {"index": 1, "action": "drop", "reason": "bad"}]"#;
+        let decisions = parse_curation_response(input, 2);
+        assert_eq!(decisions.len(), 2);
+        assert!(matches!(decisions[0].action, CurationAction::Keep));
+        assert!(matches!(decisions[1].action, CurationAction::Drop));
+    }
+
+    #[test]
+    fn test_parse_curation_with_thinking() {
+        let input = "<think>Let me analyze each candidate...</think>\n[{\"index\": 0, \"action\": \"keep\", \"reason\": \"valid\"}]";
+        let decisions = parse_curation_response(input, 1);
+        assert_eq!(decisions.len(), 1);
+        assert!(matches!(decisions[0].action, CurationAction::Keep));
+    }
+
+    #[test]
+    fn test_parse_curation_merge() {
+        let input = r#"[{"index": 0, "action": "keep"}, {"index": 1, "action": "merge:0"}]"#;
+        let decisions = parse_curation_response(input, 2);
+        assert_eq!(decisions.len(), 2);
+        assert!(matches!(decisions[1].action, CurationAction::Merge(0)));
+    }
+
+    #[test]
+    fn test_parse_curation_scope_fix() {
+        let input = r#"[{"index": 0, "action": "keep_as_project", "reason": "project-specific"}]"#;
+        let decisions = parse_curation_response(input, 1);
+        assert_eq!(decisions.len(), 1);
+        assert!(matches!(decisions[0].action, CurationAction::KeepAsProject));
+    }
+
+    #[test]
+    fn test_parse_curation_unparseable_keeps_all() {
+        let input = "I can't parse this into JSON";
+        let decisions = parse_curation_response(input, 3);
+        assert_eq!(decisions.len(), 3);
+        // All should default to keep
+        for d in &decisions {
+            assert!(matches!(d.action, CurationAction::Keep));
+        }
+    }
 }

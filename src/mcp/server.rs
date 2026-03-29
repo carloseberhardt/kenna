@@ -94,6 +94,12 @@ impl EngramServer {
             .vector_search(embedding, limit, scope_filter)
             .await?;
 
+        // Filter out superseded engrams — only show the latest version
+        let results: Vec<_> = results
+            .into_iter()
+            .filter(|e| e.superseded_by.is_none())
+            .collect();
+
         if results.is_empty() {
             return Ok("No relevant engrams found.".to_string());
         }

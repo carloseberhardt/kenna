@@ -124,6 +124,13 @@ async fn reconcile_one(
     }
 
     // 5. Check for supersession (same entity, newer content)
+    // Similarity 0.85+ = duplicate (handled above in step 4).
+    // 0.7-0.85 = very similar claim, different wording → supersession.
+    //   e.g., "Prefers Vim" → "Switched to Neovim"
+    // Below 0.7 = different facts about the same topic → coexist.
+    //   e.g., "Values simplicity" and "Values testability" under design-philosophy.
+    // Merge/combine of related-but-distinct engrams is deferred to the settling pass.
+    let mut supersedes_ids: Vec<Uuid> = Vec::new();
     if let Some(ref entity) = candidate.entity {
         let entity_matches = db
             .list(&crate::storage::db::ListFilters {
@@ -134,15 +141,19 @@ async fn reconcile_one(
             .await?;
 
         for existing in &entity_matches {
+            // Skip already-superseded engrams
+            if existing.superseded_by.is_some() {
+                continue;
+            }
             let similarity = cosine_similarity(&embedding, &existing.embedding);
-            if similarity < 0.85 {
-                // Content differs meaningfully — supersede the old one
+            if similarity >= 0.7 && similarity < 0.85 {
                 tracing::info!(
-                    "Superseding engram {} (entity={entity}, similarity={similarity:.3})",
+                    "Superseding engram {} (entity={entity}, similarity={similarity:.3}): \"{}\" → \"{}\"",
                     &existing.id.to_string()[..8],
+                    crate::pipeline::curate::truncate_str(&existing.content, 50),
+                    crate::pipeline::curate::truncate_str(&candidate.content, 50),
                 );
-                // Mark existing as superseded (we don't update it in-place,
-                // the new engram's supersedes field points to it)
+                supersedes_ids.push(existing.id);
             }
         }
     }
@@ -154,6 +165,9 @@ async fn reconcile_one(
     } else {
         Lifecycle::Candidate
     };
+
+    // If superseding, point to the most recent one we're replacing
+    let supersedes = supersedes_ids.first().copied();
 
     let engram = Engram {
         id: Uuid::new_v4(),
@@ -170,12 +184,22 @@ async fn reconcile_one(
         created_at: now,
         updated_at: now,
         accessed_at: None,
-        supersedes: None,
+        supersedes,
         superseded_by: None,
     };
 
     let id = engram.id;
     db.insert(vec![engram]).await?;
+
+    // Mark superseded engrams with back-link to the new one
+    for old_id in &supersedes_ids {
+        if let Err(e) = db.mark_superseded(old_id, &id).await {
+            tracing::warn!(
+                "Failed to mark engram {} as superseded: {e}",
+                &old_id.to_string()[..8],
+            );
+        }
+    }
 
     match lifecycle {
         Lifecycle::Accepted => Ok(ReconcileOutcome::Accepted(id)),

@@ -184,6 +184,22 @@ impl EngramDb {
         Ok(())
     }
 
+    /// Mark an existing engram as superseded by a new one.
+    pub async fn mark_superseded(&self, old_id: &Uuid, new_id: &Uuid) -> Result<()> {
+        let engram = self
+            .get_by_id(old_id)
+            .await?
+            .context("engram not found")?;
+
+        let mut updated = engram;
+        updated.superseded_by = Some(*new_id);
+        updated.updated_at = Utc::now();
+
+        self.delete(old_id).await?;
+        self.insert(vec![updated]).await?;
+        Ok(())
+    }
+
     pub async fn count(&self) -> Result<EngramStats> {
         let all = self
             .list(&ListFilters {

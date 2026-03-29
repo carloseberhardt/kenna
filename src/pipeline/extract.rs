@@ -144,39 +144,6 @@ fn parse_extraction_response(response: &str) -> Result<Vec<ExtractedCandidate>> 
         return Ok(candidates);
     }
 
-    // Repair missing opening brace: Gemma sometimes drops '{' between objects.
-    // e.g., }, "content": ... → }, {"content": ...
-    // Only applied to already-broken JSON. We split on `}, ` boundaries and try
-    // to parse each piece as an individual object, skipping corrupted ones.
-    {
-        let mut salvaged = Vec::new();
-        // Split the inner content of the array into potential object strings
-        let inner = stripped.trim().trim_start_matches('[').trim_end_matches(']');
-        for piece in split_json_objects(inner) {
-            let piece = piece.trim();
-            if piece.is_empty() {
-                continue;
-            }
-            // Ensure it's wrapped in braces
-            let obj_str = if piece.starts_with('{') {
-                piece.to_string()
-            } else {
-                format!("{{{piece}")
-            };
-            // Try to parse as a single candidate
-            if let Ok(candidate) = serde_json::from_str::<ExtractedCandidate>(&obj_str) {
-                salvaged.push(candidate);
-            }
-        }
-        if !salvaged.is_empty() {
-            tracing::debug!(
-                "Salvaged {} candidates from malformed JSON by object-level parsing",
-                salvaged.len()
-            );
-            return Ok(salvaged);
-        }
-    }
-
     // Try to find JSON array bounds: first '[' to last ']'
     if let Some(start) = stripped.find('[') {
         if let Some(end) = stripped.rfind(']') {
@@ -249,6 +216,35 @@ fn parse_extraction_response(response: &str) -> Result<Vec<ExtractedCandidate>> 
                 all_candidates.len()
             );
             return Ok(all_candidates);
+        }
+    }
+
+    // Last resort: salvage individual objects from malformed JSON.
+    // Handles missing braces, corrupted separators, etc. by splitting on
+    // } boundaries and parsing each piece individually.
+    {
+        let mut salvaged = Vec::new();
+        let inner = stripped.trim().trim_start_matches('[').trim_end_matches(']');
+        for piece in split_json_objects(inner) {
+            let piece = piece.trim();
+            if piece.is_empty() {
+                continue;
+            }
+            let obj_str = if piece.starts_with('{') {
+                piece.to_string()
+            } else {
+                format!("{{{piece}")
+            };
+            if let Ok(candidate) = serde_json::from_str::<ExtractedCandidate>(&obj_str) {
+                salvaged.push(candidate);
+            }
+        }
+        if !salvaged.is_empty() {
+            tracing::debug!(
+                "Salvaged {} candidates from malformed JSON by object-level parsing",
+                salvaged.len()
+            );
+            return Ok(salvaged);
         }
     }
 
@@ -442,5 +438,73 @@ mod tests {
         let result = parse_extraction_response(input).unwrap();
         assert_eq!(result.len(), 1);
         assert!(result[0].entity.is_none());
+    }
+
+    #[test]
+    fn test_parse_multi_array() {
+        // Gemma sometimes outputs two arrays back-to-back
+        let input = r#"[{"content": "First", "scope": "personal", "category": "fact", "entity": "a", "confidence": 0.9}]
+[{"content": "Second", "scope": "project", "category": "preference", "entity": "b", "confidence": 0.8}]"#;
+        let result = parse_extraction_response(input).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].content, "First");
+        assert_eq!(result[1].content, "Second");
+    }
+
+    #[test]
+    fn test_parse_bare_object() {
+        // Gemma sometimes outputs a single object without array brackets
+        let input = r#"{"content": "Test", "scope": "personal", "category": "fact", "entity": "x", "confidence": 0.9}"#;
+        let result = parse_extraction_response(input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "Test");
+    }
+
+    #[test]
+    fn test_parse_missing_brace() {
+        // Gemma drops opening brace on second object
+        let input = r#"[{"content": "First", "scope": "personal", "category": "fact", "entity": "a", "confidence": 0.9}, "content": "Second", "scope": "project", "category": "fact", "entity": "b", "confidence": 0.8}]"#;
+        let result = parse_extraction_response(input).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].content, "First");
+        assert_eq!(result[1].content, "Second");
+    }
+
+    #[test]
+    fn test_parse_truncated() {
+        // Response cut off mid-object — should salvage the complete first object
+        let input = r#"[{"content": "Complete", "scope": "personal", "category": "fact", "entity": "a", "confidence": 0.9}, {"content": "Trunc"#;
+        let result = parse_extraction_response(input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "Complete");
+    }
+
+    #[test]
+    fn test_split_json_objects_basic() {
+        let input = r#"{"a": 1}, {"b": 2}"#;
+        let pieces = split_json_objects(input);
+        assert_eq!(pieces.len(), 2);
+    }
+
+    #[test]
+    fn test_split_json_objects_brackets_in_strings() {
+        // Brackets inside string values should not split
+        let input = r#"{"content": "chose [A] over [B]", "val": 1}, {"content": "other", "val": 2}"#;
+        let pieces = split_json_objects(input);
+        assert_eq!(pieces.len(), 2);
+        assert!(pieces[0].contains("[A] over [B]"));
+    }
+
+    #[test]
+    fn test_find_array_boundary() {
+        let input = r#"[{"a": 1}] [{"b": 2}]"#;
+        let boundary = find_array_boundary(input).unwrap();
+        assert_eq!(&input[..boundary], r#"[{"a": 1}]"#);
+    }
+
+    #[test]
+    fn test_find_array_boundary_no_second() {
+        let input = r#"[{"a": 1}]"#;
+        assert!(find_array_boundary(input).is_none());
     }
 }

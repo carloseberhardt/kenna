@@ -20,7 +20,13 @@ pub async fn run(
         limit: Some(limit),
     };
 
-    let engrams = db.list(&filters).await?;
+    let all_engrams = db.list(&filters).await?;
+
+    // Hide superseded engrams by default — they've been replaced
+    let engrams: Vec<_> = all_engrams
+        .into_iter()
+        .filter(|e| e.superseded_by.is_none())
+        .collect();
 
     if engrams.is_empty() {
         println!("No engrams found.");

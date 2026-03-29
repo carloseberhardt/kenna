@@ -66,6 +66,7 @@ impl Cursor {
     }
 
     /// Number of tracked sessions.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.processed.len()
     }

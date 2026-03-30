@@ -183,27 +183,32 @@ impl LlamaBackend {
 
         gen_state.ctx.clear_kv_cache();
 
-        let mut batch = LlamaBatch::new(tokens.len().max(1), 1);
-        if tokens.len() > 1 {
-            for (pos, &token) in tokens[..tokens.len() - 1].iter().enumerate() {
+        // Process prompt in n_batch-sized chunks.
+        // Only the very last token needs logits=true for generation to start.
+        let n_batch = gen_state.ctx_size.min(2048) as usize; // use actual batch capacity
+        let n_tokens = tokens.len();
+
+        let mut pos = 0usize;
+        while pos < n_tokens {
+            let end = (pos + n_batch).min(n_tokens);
+            let chunk = &tokens[pos..end];
+            let is_last_chunk = end == n_tokens;
+
+            let mut batch = LlamaBatch::new(chunk.len(), 1);
+            for (i, &token) in chunk.iter().enumerate() {
+                let is_last_token = is_last_chunk && i == chunk.len() - 1;
                 batch
-                    .add(token, pos as i32, &[0], false)
+                    .add(token, (pos + i) as i32, &[0], is_last_token)
                     .map_err(|e| anyhow::anyhow!("batch add failed: {e}"))?;
             }
-        }
-        batch
-            .add(
-                tokens[tokens.len() - 1],
-                (tokens.len() - 1) as i32,
-                &[0],
-                true,
-            )
-            .map_err(|e| anyhow::anyhow!("batch add failed: {e}"))?;
 
-        gen_state
-            .ctx
-            .decode(&mut batch)
-            .map_err(|e| anyhow::anyhow!("decode failed: {e}"))?;
+            gen_state
+                .ctx
+                .decode(&mut batch)
+                .map_err(|e| anyhow::anyhow!("decode failed: {e}"))?;
+
+            pos = end;
+        }
 
         // Note: GBNF grammar sampling crashes with both Vulkan and ROCm backends
         // in llama-cpp-2 0.1.140 (C++ exception Rust can't catch).
@@ -221,6 +226,7 @@ impl LlamaBackend {
         let mut n_decoded = 0u32;
         let mut cur_pos = tokens.len() as i32;
         let mut decoder = encoding_rs::UTF_8.new_decoder();
+        let mut gen_batch = LlamaBatch::new(1, 1);
 
         loop {
             if n_decoded >= max_tokens {
@@ -239,15 +245,15 @@ impl LlamaBackend {
                 .map_err(|e| anyhow::anyhow!("token decode failed: {e}"))?;
             output.push_str(&piece);
 
-            batch.clear();
-            batch
+            gen_batch.clear();
+            gen_batch
                 .add(token, cur_pos, &[0], true)
                 .map_err(|e| anyhow::anyhow!("batch add failed: {e}"))?;
             cur_pos += 1;
 
             gen_state
                 .ctx
-                .decode(&mut batch)
+                .decode(&mut gen_batch)
                 .map_err(|e| anyhow::anyhow!("decode failed: {e}"))?;
 
             n_decoded += 1;
@@ -283,28 +289,31 @@ impl InferenceBackend for LlamaBackend {
 
         gen_state.ctx.clear_kv_cache();
 
-        // Build batch: logits only on last token
-        let mut batch = LlamaBatch::new(tokens.len().max(1), 1);
-        if tokens.len() > 1 {
-            for (pos, &token) in tokens[..tokens.len() - 1].iter().enumerate() {
+        // Process prompt in n_batch-sized chunks
+        let n_batch = gen_state.ctx_size.min(2048) as usize;
+        let n_tokens = tokens.len();
+
+        let mut pos = 0usize;
+        while pos < n_tokens {
+            let end = (pos + n_batch).min(n_tokens);
+            let chunk = &tokens[pos..end];
+            let is_last_chunk = end == n_tokens;
+
+            let mut batch = LlamaBatch::new(chunk.len(), 1);
+            for (i, &token) in chunk.iter().enumerate() {
+                let is_last_token = is_last_chunk && i == chunk.len() - 1;
                 batch
-                    .add(token, pos as i32, &[0], false)
+                    .add(token, (pos + i) as i32, &[0], is_last_token)
                     .map_err(|e| anyhow::anyhow!("batch add failed: {e}"))?;
             }
-        }
-        batch
-            .add(
-                tokens[tokens.len() - 1],
-                (tokens.len() - 1) as i32,
-                &[0],
-                true,
-            )
-            .map_err(|e| anyhow::anyhow!("batch add failed: {e}"))?;
 
-        gen_state
-            .ctx
-            .decode(&mut batch)
-            .map_err(|e| anyhow::anyhow!("decode failed: {e}"))?;
+            gen_state
+                .ctx
+                .decode(&mut batch)
+                .map_err(|e| anyhow::anyhow!("decode failed: {e}"))?;
+
+            pos = end;
+        }
 
         // Gemma 3 recommended: temp=1.0, top_k=64, top_p=0.95
         let mut sampler = llama_cpp_2::sampling::LlamaSampler::chain_simple([
@@ -318,6 +327,7 @@ impl InferenceBackend for LlamaBackend {
         let mut n_decoded = 0u32;
         let mut cur_pos = tokens.len() as i32;
         let mut decoder = encoding_rs::UTF_8.new_decoder();
+        let mut gen_batch = LlamaBatch::new(1, 1);
 
         loop {
             if n_decoded >= max_tokens {
@@ -336,15 +346,15 @@ impl InferenceBackend for LlamaBackend {
                 .map_err(|e| anyhow::anyhow!("token decode failed: {e}"))?;
             output.push_str(&piece);
 
-            batch.clear();
-            batch
+            gen_batch.clear();
+            gen_batch
                 .add(token, cur_pos, &[0], true)
                 .map_err(|e| anyhow::anyhow!("batch add failed: {e}"))?;
             cur_pos += 1;
 
             gen_state
                 .ctx
-                .decode(&mut batch)
+                .decode(&mut gen_batch)
                 .map_err(|e| anyhow::anyhow!("decode failed: {e}"))?;
 
             n_decoded += 1;

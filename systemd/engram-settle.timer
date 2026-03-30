@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily engram settling pass (cross-project promotion + entity synthesis)
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+# If the machine was asleep at 3am, run on next wake.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

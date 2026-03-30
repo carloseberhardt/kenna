@@ -1,0 +1,13 @@
+[Unit]
+Description=Engram reconciliation pipeline
+# Prevent tight retry loops if something is fundamentally broken
+StartLimitBurst=3
+StartLimitIntervalSec=3600
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cargo/bin/engram reconcile
+# Reconcile can take 10+ minutes on large backlogs
+TimeoutStartSec=1800
+# Log level controlled by ~/.config/engram/config.toml (default: warn)
+# Override here for debugging: Environment=RUST_LOG=engram=info

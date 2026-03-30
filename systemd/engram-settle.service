@@ -1,0 +1,11 @@
+[Unit]
+Description=Engram settling pass
+# Don't settle while reconcile is running — they share GPU resources
+After=engram-reconcile.service
+StartLimitBurst=2
+StartLimitIntervalSec=86400
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cargo/bin/engram settle
+TimeoutStartSec=1800

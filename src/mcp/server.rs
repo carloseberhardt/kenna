@@ -19,7 +19,7 @@ use crate::storage::models::Scope;
 struct EngramRecallParams {
     /// What you want to recall — a natural language description of the context, topic, or question
     query: String,
-    /// Optional filter: "personal" for user-level knowledge, "project" for codebase-specific. Omit to search both.
+    /// Optional scope filter. "personal" for knowledge true about the user regardless of project (hardware, preferences, interests). "project" for codebase-specific decisions and patterns. Omit to search both.
     #[serde(default)]
     scope: Option<String>,
     /// Maximum number of engrams to return
@@ -40,12 +40,18 @@ pub struct EngramServer {
 
 #[tool_router]
 impl EngramServer {
-    /// Recall what you know about the user from past interactions. Returns relevant
-    /// engrams — facts, preferences, decisions, interests, opinions, and patterns —
-    /// drawn from the user's history across all Claude Code sessions. Use this to
-    /// ground your responses in continuity with past work and conversation. Call at
-    /// session start to orient yourself, or mid-session when you need context about
-    /// the user's preferences, past decisions, or interests.
+    /// Recall what you know about the user from past interactions. Returns facts,
+    /// preferences, decisions, interests, opinions, and patterns drawn from the
+    /// user's history across all Claude Code sessions. Call this when context about
+    /// the user would help you make better decisions or avoid assumptions — for
+    /// example, their preferred tools, design philosophy, hardware setup, or how
+    /// they like to work. Treat results as things you already know about this
+    /// person, not as search results to present.
+    ///
+    /// The "project" scope filters to knowledge from specific codebases. Include
+    /// the project directory name (e.g., "engram", "ralph-trader") in your query
+    /// to find project-specific decisions and patterns. The "personal" scope
+    /// returns knowledge true about the user regardless of project.
     #[tool(name = "engram_recall")]
     async fn engram_recall(
         &self,

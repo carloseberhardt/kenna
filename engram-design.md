@@ -640,12 +640,24 @@ testability" under design-philosophy) were incorrectly superseded. Narrowed to
 0.7-0.85: similar enough to be the same claim restated, different enough to not
 be a duplicate.
 
-### Contradiction detection (deferred)
+### Contradiction detection (resolved — handled by settling)
 The v2 design included LLM-based contradiction detection during reconciliation.
-Not implemented — the cost of an additional LLM call per entity match was too
-high for the marginal benefit. Contradictions are handled implicitly: supersession
-replaces old claims with new ones. Explicit contradiction flagging may be
-revisited in the settling pass where it can operate on batches.
+Not implemented as a separate step — too expensive for marginal benefit.
+Instead, contradictions are resolved at multiple layers:
+
+1. **Reconcile**: Supersession (cosine 0.7-0.85 + same entity) naturally replaces
+   old claims with newer ones.
+2. **Settling — entity synthesis**: The synthesis prompt says "if items contradict,
+   keep the most recent one." Within-entity contradictions are resolved during
+   synthesis at no extra cost.
+3. **Settling — cross-project promotion**: Semantically similar contradictions
+   across different entity keys will cluster together and be resolved during
+   promotion synthesis.
+
+Remaining gap: contradictions between engrams that aren't semantically similar
+enough to cluster. These are unlikely to be true contradictions — if the claims
+are dissimilar enough to avoid clustering, they're probably about different
+enough aspects to coexist.
 
 ### Deduplication threshold
 Design doc v2 specified cosine > 0.92 for dedup. Implementation uses 0.85,

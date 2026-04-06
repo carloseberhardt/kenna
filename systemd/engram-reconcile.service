@@ -1,7 +1,9 @@
 [Unit]
 Description=Engram reconciliation pipeline
-# Prevent tight retry loops if something is fundamentally broken
-StartLimitBurst=3
+# Allow up to 6 starts per hour. Soft-exits from the VRAM check count
+# as successful exits (exit 0), but tight retry loops on fundamental
+# failures should still be caught.
+StartLimitBurst=6
 StartLimitIntervalSec=3600
 
 [Service]

@@ -1,9 +1,0 @@
-[Unit]
-Description=Watch Claude Code sessions for changes
-
-[Path]
-PathChanged=%h/.claude/projects
-Unit=engram-debounce.timer
-
-[Install]
-WantedBy=default.target

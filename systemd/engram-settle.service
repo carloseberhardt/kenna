@@ -1,8 +1,8 @@
 [Unit]
 Description=Engram settling pass
-# Don't settle while reconcile is running — they share GPU resources
-After=engram-reconcile.service
-StartLimitBurst=2
+# Allow up to 4 starts per day. GPU contention is handled by the
+# VRAM check in the binary (soft-exits cleanly if GPU is busy).
+StartLimitBurst=4
 StartLimitIntervalSec=86400
 
 [Service]

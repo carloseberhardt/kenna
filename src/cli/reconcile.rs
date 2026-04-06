@@ -109,6 +109,17 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
         anyhow::bail!("Curation model not found at {}", curate_path.display());
     }
 
+    // Check GPU availability before loading any models. Soft exit if another
+    // workload is using the VRAM — next scheduled run will try again.
+    if let Err(msg) = crate::inference::gpu_check::ensure_free_vram(
+        config.reconcile_min_free_vram_gb,
+        "reconcile",
+    ) {
+        println!("{msg}");
+        tracing::warn!("{msg}");
+        return Ok(());
+    }
+
     println!("Loading extraction model...");
     let extract_backend = LlamaBackend::new(crate::inference::llama::LlamaConfig {
         generation_model_path: Some(extract_path.to_str().unwrap().to_string()),

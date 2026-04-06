@@ -25,6 +25,13 @@ pub struct Config {
     pub scope_demotion_threshold: f32,
     /// Model for settling synthesis. Defaults to curation_model if not set.
     pub settling_model: Option<String>,
+    /// Minimum free VRAM (GB) required before reconcile will start.
+    /// Checked via rocm-smi. If rocm-smi is unavailable, the check is skipped.
+    /// Reconcile loads Gemma (~3GB) then Qwen (~5GB) sequentially, so peak need is ~6GB.
+    pub reconcile_min_free_vram_gb: f64,
+    /// Minimum free VRAM (GB) required before settle will start.
+    /// Default is higher than reconcile to leave room for larger synthesis models.
+    pub settle_min_free_vram_gb: f64,
     pub reconcile: ReconcileConfig,
     pub settle: SettleConfig,
 }
@@ -54,6 +61,8 @@ impl Default for Config {
             embedding_model: "nomic-embed-text-v1.5.Q8_0.gguf".into(),
             embedding_dimensions: 768,
             settling_model: None,
+            reconcile_min_free_vram_gb: 7.0,
+            settle_min_free_vram_gb: 7.0,
             dedup_cosine_threshold: 0.85,
             supersession_cosine_min: 0.7,
             supersession_cosine_max: 0.85,

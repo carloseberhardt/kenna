@@ -1,3 +1,4 @@
+pub mod gpu_check;
 pub mod llama;
 
 use anyhow::Result;

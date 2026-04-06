@@ -43,6 +43,16 @@ pub async fn run(dry_run: bool) -> Result<()> {
         anyhow::bail!("Embedding model not found at {}", embed_path.display());
     }
 
+    // Check GPU availability before loading the synthesis model.
+    if let Err(msg) = crate::inference::gpu_check::ensure_free_vram(
+        config.settle_min_free_vram_gb,
+        "settle",
+    ) {
+        println!("{msg}");
+        tracing::warn!("{msg}");
+        return Ok(());
+    }
+
     println!("Loading models...");
     let backend = LlamaBackend::full(
         gen_path.to_str().unwrap(),

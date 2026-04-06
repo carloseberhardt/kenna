@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodic engram reconciliation
+
+[Timer]
+# Every 2 hours. Cross-session continuity is the value — intra-session
+# updates don't help since the current session already has the context.
+# Incremental processing (byte-offset cursor) makes each run cheap.
+OnBootSec=10min
+OnUnitActiveSec=2h
+# If the machine was asleep when the timer should have fired, run on next wake.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

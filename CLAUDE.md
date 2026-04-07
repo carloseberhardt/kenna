@@ -99,6 +99,35 @@ Search terms for investigating: `llama.cpp GBNF grammar crash abort sampler`,
 - `extract.rs::split_json_objects()` — string-context-aware object splitting for
   recovering individual candidates from malformed arrays
 
+### Gemma 4 upgrade — waiting on llama.cpp fixes
+
+We have Gemma 4 E4B and 26B-A4B GGUF files downloaded in `~/.local/share/engram/models/`
+but cannot use them yet. Two blockers we hit when testing on 2026-04-06:
+
+1. **Chat template detection** — `llama_chat_apply_template()` returned -1 because
+   llama.cpp's `llm_chat_detect_template()` couldn't recognize Gemma 4's new template
+   format. Gemma 4 uses `<|turn>` markers, not `<start_of_turn>` like Gemma 3.
+   **Status as of 2026-04-07**: Likely fixed by [PR #21326](https://github.com/ggml-org/llama.cpp/pull/21326)
+   and [PR #21418](https://github.com/ggml-org/llama.cpp/pull/21418) (specialized parser merged April 4).
+
+2. **`<unused>` token spam during inference** — even when loading worked, generation
+   produced infinite `<unusedNN>` tokens on ROCm/CUDA. Bug was in CUDA kernel fusion
+   for GEMV gate+up+glu (src/dst buffer overlap).
+   **Status as of 2026-04-07**: Fixed by [PR #21566](https://github.com/ggml-org/llama.cpp/pull/21566)
+   (merged April 7, 2026 16:57 UTC). PR title says "CUDA" but ROCm should benefit
+   too via the HIP code path. Needs ROCm-specific confirmation.
+
+**CHECK ON EACH VISIT**:
+- `gh api repos/ggml-org/llama.cpp/issues/21321` — has the issue closed?
+- `gh api repos/utilityai/llama-cpp-rs/releases/latest` — has the submodule been bumped past 0d049d6a (the commit just before #21566)?
+- If both are good, retry the Gemma 4 E4B test (see Cargo.toml git branch hack from 2026-04-06).
+
+**On Unsloth vs ggml-org GGUFs**: We have ggml-org quants currently. Both repos
+exhibited this bug because it was a llama.cpp kernel issue, not a quant problem.
+Once #21566 propagates, ggml-org Q4_K_M is the safe baseline. Unsloth's UD-Q4_K_XL
+or UD-Q5_K_XL quants are generally higher quality at slightly larger size if we
+want to upgrade later.
+
 ### Extraction model selection
 
 Do NOT use reasoning/thinking models (Qwen3, DeepSeek-R1, etc.) for extraction.

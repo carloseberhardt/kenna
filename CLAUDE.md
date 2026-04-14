@@ -99,34 +99,50 @@ Search terms for investigating: `llama.cpp GBNF grammar crash abort sampler`,
 - `extract.rs::split_json_objects()` — string-context-aware object splitting for
   recovering individual candidates from malformed arrays
 
-### Gemma 4 upgrade — waiting on llama.cpp fixes
+### Gemma 4 upgrade — blocked on C API chat template gap
 
 We have Gemma 4 E4B and 26B-A4B GGUF files downloaded in `~/.local/share/engram/models/`
-but cannot use them yet. Two blockers we hit when testing on 2026-04-06:
+but still cannot use them. Testing history:
 
-1. **Chat template detection** — `llama_chat_apply_template()` returned -1 because
-   llama.cpp's `llm_chat_detect_template()` couldn't recognize Gemma 4's new template
-   format. Gemma 4 uses `<|turn>` markers, not `<start_of_turn>` like Gemma 3.
-   **Status as of 2026-04-07**: Likely fixed by [PR #21326](https://github.com/ggml-org/llama.cpp/pull/21326)
-   and [PR #21418](https://github.com/ggml-org/llama.cpp/pull/21418) (specialized parser merged April 4).
+**2026-04-06 test (llama-cpp-2 via ysimonson/gemma4 PR branch):**
+- Model loaded ✓
+- `apply_chat_template()` returned -1 ✗ — `LLM_CHAT_TEMPLATE_UNKNOWN`
 
-2. **`<unused>` token spam during inference** — even when loading worked, generation
-   produced infinite `<unusedNN>` tokens on ROCm/CUDA. Bug was in CUDA kernel fusion
-   for GEMV gate+up+glu (src/dst buffer overlap).
-   **Status as of 2026-04-07**: Fixed by [PR #21566](https://github.com/ggml-org/llama.cpp/pull/21566)
-   (merged April 7, 2026 16:57 UTC). PR title says "CUDA" but ROCm should benefit
-   too via the HIP code path. Needs ROCm-specific confirmation.
+**2026-04-14 retest (llama-cpp-2 0.1.144 via utilityai/main branch):**
+- Model loaded ✓
+- `apply_chat_template()` STILL returned -1 ✗ — `chat template failed: ffi error -1`
+
+**Root cause:** PRs #21326 and #21418 fixed Gemma 4 templates in the `common/`
+directory (used by `llama-server`'s Jinja-based template system), but **did not
+update `src/llama-chat.cpp::llm_chat_detect_template()`** — the C API function
+that `llama-cpp-2` binds to. The C-level detector still only matches Gemma via
+`<start_of_turn>` substring. Gemma 4's template uses `<|turn>` markers instead,
+so detection returns `LLM_CHAT_TEMPLATE_UNKNOWN` and the function returns -1.
+
+**No open issue or PR specifically tracks this gap** as of 2026-04-14. The
+Gemma 4 upstream work has been focused on server-side and kernel fusion.
+
+**Options when we revisit:**
+1. Wait for someone to add `LLM_CHAT_TEMPLATE_GEMMA4` detection to `llama-chat.cpp`
+2. File an issue upstream describing the C API gap
+3. Work around it in our code: bypass `apply_chat_template()` and manually
+   format prompts with `<|turn>user\n...<|turn>model\n` via raw `generate()`.
+   Would need a model-specific code path in `src/inference/llama.rs`.
+
+**Inference bug status (separate concern, fixed):** PR #21566 (CUDA/HIP buffer
+overlap in GEMV fusion, merged April 7) fixed the `<unused>` token spam that
+would have bitten us after the template fix. Confirmed in the submodule we
+tested with. When we do get the template issue resolved, inference should work.
 
 **CHECK ON EACH VISIT**:
-- `gh api repos/ggml-org/llama.cpp/issues/21321` — has the issue closed?
-- `gh api repos/utilityai/llama-cpp-rs/releases/latest` — has the submodule been bumped past 0d049d6a (the commit just before #21566)?
-- If both are good, retry the Gemma 4 E4B test (see Cargo.toml git branch hack from 2026-04-06).
+- Search for issues/PRs mentioning `llama-chat.cpp` and Gemma 4:
+  `gh api 'search/issues?q=repo:ggml-org/llama.cpp+llama-chat.cpp+gemma4'`
+- Check llama-cpp-rs releases: `gh api repos/utilityai/llama-cpp-rs/releases/latest`
+- If the C API gap is filled, retry with git dep on main and the same
+  `--session 6d2e38ba` test from `cli/reconcile.rs`.
 
-**On Unsloth vs ggml-org GGUFs**: We have ggml-org quants currently. Both repos
-exhibited this bug because it was a llama.cpp kernel issue, not a quant problem.
-Once #21566 propagates, ggml-org Q4_K_M is the safe baseline. Unsloth's UD-Q4_K_XL
-or UD-Q5_K_XL quants are generally higher quality at slightly larger size if we
-want to upgrade later.
+**On Unsloth vs ggml-org GGUFs**: We have ggml-org quants currently. The
+template issue affects both since it's in llama.cpp's detector, not the quant.
 
 ### Extraction model selection
 

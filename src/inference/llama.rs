@@ -13,10 +13,6 @@ use llama_cpp_2::openai::OpenAIChatTemplateParams;
 
 use super::InferenceBackend;
 
-// GBNF grammar placeholder — crashes with llama-cpp-2 0.1.140 on ROCm.
-// See CLAUDE.md "GBNF grammar sampling crashes" for details.
-// const ENGRAM_JSON_GRAMMAR: &str = "root ::= \"hello\"\n";
-
 /// Configuration for the Llama backend.
 pub struct LlamaConfig {
     /// Path to the extraction model GGUF (e.g. Qwen3-8B).
@@ -158,7 +154,55 @@ impl LlamaBackend {
         })
     }
 
-    /// Generate with GBNF grammar constraining output to valid JSON arrays.
+    /// Render chat messages through the model's embedded Jinja chat template
+    /// via llama.cpp's `common/` path (same renderer `llama-server` uses).
+    /// Supports newer templates (e.g. Gemma 4's `<|turn>`) that the C API
+    /// token-substring detector in `llama_chat_apply_template` does NOT
+    /// recognize.
+    fn render_chat_prompt(&self, messages: &[super::ChatMessage]) -> Result<String> {
+        let gen_model = self
+            .generation_model
+            .as_ref()
+            .context("generation model not loaded")?;
+
+        let messages_json = serde_json::to_string(
+            &messages.iter()
+                .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+                .collect::<Vec<_>>()
+        ).map_err(|e| anyhow::anyhow!("messages JSON encode failed: {e}"))?;
+
+        let template = gen_model
+            .chat_template(None)
+            .map_err(|e| anyhow::anyhow!("no chat template in model: {e}"))?;
+
+        let params = OpenAIChatTemplateParams {
+            messages_json: &messages_json,
+            tools_json: None,
+            tool_choice: None,
+            json_schema: None,
+            grammar: None,
+            reasoning_format: None,
+            chat_template_kwargs: None,
+            add_generation_prompt: true,
+            use_jinja: true,
+            parallel_tool_calls: false,
+            enable_thinking: false,
+            add_bos: true,
+            add_eos: false,
+            parse_tool_calls: false,
+        };
+
+        let result = gen_model
+            .apply_chat_template_oaicompat(&template, &params)
+            .map_err(|e| anyhow::anyhow!("chat template failed: {e}"))?;
+
+        Ok(result.prompt)
+    }
+
+    /// Core generation loop. Produces unconstrained text output — JSON
+    /// validity is enforced downstream by the response parser, not here.
+    /// (GBNF grammar sampling was investigated and ruled out; see CLAUDE.md
+    /// "GBNF grammar sampling — investigated and ruled out".)
     fn generate_with_grammar(&self, prompt: &str, max_tokens: u32) -> Result<String> {
         let gen_model = self
             .generation_model
@@ -210,10 +254,6 @@ impl LlamaBackend {
 
             pos = end;
         }
-
-        // Note: GBNF grammar sampling crashes with both Vulkan and ROCm backends
-        // in llama-cpp-2 0.1.140 (C++ exception Rust can't catch).
-        // JSON validity enforced by the response parser instead.
 
         // Gemma 3 recommended: temp=1.0, top_k=64, top_p=0.95
         let mut sampler = llama_cpp_2::sampling::LlamaSampler::chain_simple([
@@ -382,49 +422,8 @@ impl InferenceBackend for LlamaBackend {
         messages: &[super::ChatMessage],
         max_tokens: u32,
     ) -> Result<String> {
-        let gen_model = self
-            .generation_model
-            .as_ref()
-            .context("generation model not loaded")?;
-
-        // Build OpenAI-format JSON for the messages. We route through
-        // apply_chat_template_oaicompat + use_jinja=true so the model's embedded
-        // Jinja chat template is rendered by llama.cpp's `common/` path — the
-        // same path that llama-server uses. This supports newer templates
-        // (e.g. Gemma 4's <|turn>...) that the C-API token-detector in
-        // llama_chat_apply_template does NOT recognize.
-        let messages_json = serde_json::to_string(
-            &messages.iter()
-                .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
-                .collect::<Vec<_>>()
-        ).map_err(|e| anyhow::anyhow!("messages JSON encode failed: {e}"))?;
-
-        let template = gen_model
-            .chat_template(None)
-            .map_err(|e| anyhow::anyhow!("no chat template in model: {e}"))?;
-
-        let params = OpenAIChatTemplateParams {
-            messages_json: &messages_json,
-            tools_json: None,
-            tool_choice: None,
-            json_schema: None,
-            grammar: None,
-            reasoning_format: None,
-            chat_template_kwargs: None,
-            add_generation_prompt: true,
-            use_jinja: true,
-            parallel_tool_calls: false,
-            enable_thinking: false,
-            add_bos: true,
-            add_eos: false,
-            parse_tool_calls: false,
-        };
-
-        let result = gen_model
-            .apply_chat_template_oaicompat(&template, &params)
-            .map_err(|e| anyhow::anyhow!("chat template failed: {e}"))?;
-
-        self.generate_with_grammar(&result.prompt, max_tokens)
+        let prompt = self.render_chat_prompt(messages)?;
+        self.generate_with_grammar(&prompt, max_tokens)
     }
 
     fn embed(&self, text: &str) -> Result<Vec<f32>> {

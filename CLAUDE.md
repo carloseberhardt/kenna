@@ -24,7 +24,7 @@ cargo run -- stats           # Show counts
 - **Language**: Rust (edition 2024)
 - **Binary**: `engram`
 - **Vector store**: LanceDB 0.27 (embedded, Arrow-backed)
-- **LLM inference**: `llama-cpp-2` 0.1.140 with ROCm backend (AMD GPU)
+- **LLM inference**: `llama-cpp-2` 0.1 (currently resolving to 0.1.143) with ROCm backend (AMD GPU)
 - **Extraction model**: Gemma 3 4B IT Q6_K GGUF (~3.2GB) — fast structured extraction
 - **Curation model**: Qwen3 8B Q4_K_M GGUF (~5GB) — thinking model for quality filtering
 - **Embedding model**: nomic-embed-text v1.5 Q8_0 GGUF (~138MB, CPU)
@@ -74,22 +74,47 @@ The safe `llama-cpp-2` wrappers (`embeddings_seq_ith`) segfault on BERT-type mod
 when using the Vulkan backend. Switching to ROCm fixed this. The safe API now works
 for both generation and embedding.
 
-### GBNF grammar sampling crashes (llama-cpp-2 0.1.140)
+### GBNF grammar sampling — investigated and ruled out
 
-`LlamaSampler::grammar()` causes a foreign exception abort on both Vulkan and ROCm.
-Not a grammar syntax issue — the crash happens during sampling, not initialization.
-As of 2026-03-29, 0.1.140 is the latest published version — no fix available yet.
+The original foreign-exception abort (llama-cpp-2 0.1.140) was fixed in 0.1.141
+by a `try/catch(...)` wrapper around `llama_sampler_init_grammar` in
+`wrapper_common.cpp`. Grammar samplers now initialize cleanly and return
+`GrammarError` on failure instead of crashing the process.
 
-**CHECK ON EACH VISIT**: Run `cargo search llama-cpp-2` to see if a newer version
-exists. If so, test whether `LlamaSampler::grammar()` still crashes with ROCm.
-If grammar sampling works, it would eliminate all of the JSON repair workarounds
-below (but validate that constrained output doesn't degrade extraction quality —
-grammar constraints can sometimes cause repetition or truncation in small models).
+**However, runtime use of `LlamaSampler::grammar()` in a `chain_simple`
+sampler is still unusable.** Tested on 0.1.143 (2026-04-22) with a permissive
+JSON-array grammar: chunk 0 emitted thousands of whitespace tokens
+(unbounded `ws*` let the model loop until max_tokens), and the next chunk hit
+`GGML_ASSERT(!stacks.empty()) failed` at
+`llama.cpp/src/llama-grammar.cpp:940` — the grammar was asked to filter
+candidates after reaching a terminal state.
 
-Search terms for investigating: `llama.cpp GBNF grammar crash abort sampler`,
-`llama-cpp-2 rust grammar foreign exception`.
+Root cause: llama.cpp's own `common/sampling.cpp` does **not** simply chain
+the grammar sampler in with temp/top-k/top-p. It keeps grammar separate and
+runs **grammar-based rejection sampling** — sample with the normal chain,
+check the chosen token against the grammar, and only resample (with grammar
+first) if invalid. It also gates grammar application on a
+`grammar_should_apply()` check that skips once the grammar has accepted.
+Neither safety is exposed via `LlamaSampler::chain_simple(...)`, so naïve
+chaining blows up.
 
-**Workarounds in place because of this bug** (can be simplified/removed if grammar works):
+Possible future paths if we want to revisit:
+- `llama-cpp-2`'s `llguidance` feature — separate grammar implementation via
+  the `llguidance` crate; handles terminal states internally.
+- `grammar_lazy_patterns()` — only enforces grammar after a trigger pattern
+  (e.g. `[`). Sidesteps the leading-whitespace loop but likely still hits the
+  terminal-state issue.
+- Wait for `llama-cpp-2` to expose the common/sampling.cpp rejection-sampling
+  pattern directly.
+
+For now we rely on prompt-level discipline (single-quote rule + serde defaults
+for the `confidence` / `scope_confidence` fields, see `pipeline/extract.rs`)
+plus the parser fallbacks below. In A/B testing, Gemma 4 E4B Q6_K went from
+2/8 parse failures to 0/8 with prompt-level fixes alone.
+
+**Parser workarounds kept for robustness** (removing them saves little — they
+catch rare truncation/dropped-brace cases that grammar-sampling wouldn't
+help with either):
 - `extract.rs::parse_extraction_response()` — multi-stage fallback parser:
   code fence stripping, `[`-to-`]` extraction, object-level salvage for missing
   braces, multi-array bracket-depth splitting (`find_array_boundary`), truncation

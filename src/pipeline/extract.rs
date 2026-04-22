@@ -4,6 +4,10 @@ use serde::Deserialize;
 use crate::inference::InferenceBackend;
 use super::preprocess::ConversationChunk;
 
+fn default_confidence() -> f32 {
+    0.5
+}
+
 fn default_scope_confidence() -> f32 {
     0.5
 }
@@ -16,6 +20,7 @@ pub struct ExtractedCandidate {
     pub category: String,
     pub entity: Option<String>,
     /// How confident the model is that the content is durable and accurate.
+    #[serde(default = "default_confidence")]
     pub confidence: f32,
     /// How confident the model is in the scope classification.
     /// Low scope_confidence on a "personal" item → safer to demote to "project".
@@ -51,7 +56,9 @@ For each item, classify:
 - scope_confidence: 0.0-1.0 how certain you are about the scope. Low (< 0.7) if it could be either.
 - content: concise, self-contained natural language statement. Must be specific enough to be useful on its own — vague or partial claims are not worth storing.
 
-Respond with ONLY a JSON array. If nothing worth extracting, respond with []. Do not invent facts."#;
+Respond with ONLY a JSON array. If nothing worth extracting, respond with []. Do not invent facts.
+
+JSON OUTPUT RULE: Inside the "content" string, use single quotes (') for any embedded quotation, scare-quote, or term of art. Reserve double quotes (") for JSON field delimiters only. Example: write 'impressive demo', not "impressive demo"."#;
 
 use crate::inference::ChatMessage;
 
@@ -82,6 +89,17 @@ Assistant: Pushed to main.
 
 const FEWSHOT_ASSISTANT_2: &str = "[]";
 
+const FEWSHOT_USER_3: &str = r#"Project: acme-widgets
+Session: example-3
+
+<conversation>
+Human: I want the demo to feel polished, not like some quick hack
+Assistant: Makes sense, I'll focus on the end-to-end flow.
+</conversation>"#;
+
+// Demonstrates the single-quote rule for scare-quotes inside content.
+const FEWSHOT_ASSISTANT_3: &str = r#"[{"content": "Values a polished end-to-end demo over a 'quick hack' prototype", "scope": "project", "category": "preference", "entity": "demo-quality", "confidence": 0.8, "scope_confidence": 0.6}]"#;
+
 /// Extract engram candidates from a conversation chunk using the LLM.
 pub fn extract_from_chunk(
     backend: &dyn InferenceBackend,
@@ -106,7 +124,7 @@ pub fn extract_from_chunk(
         chunk.approx_tokens,
     );
 
-    // Multi-turn: system + two few-shot examples + real conversation
+    // Multi-turn: system + three few-shot examples + real conversation
     let messages = vec![
         ChatMessage { role: "system".into(), content: system_prompt },
         // Few-shot 1: preference extraction with rationale
@@ -115,6 +133,9 @@ pub fn extract_from_chunk(
         // Few-shot 2: empty array for procedural talk
         ChatMessage { role: "user".into(), content: FEWSHOT_USER_2.into() },
         ChatMessage { role: "assistant".into(), content: FEWSHOT_ASSISTANT_2.into() },
+        // Few-shot 3: demonstrates the single-quote rule for embedded quotes in content
+        ChatMessage { role: "user".into(), content: FEWSHOT_USER_3.into() },
+        ChatMessage { role: "assistant".into(), content: FEWSHOT_ASSISTANT_3.into() },
         // Real conversation
         ChatMessage { role: "user".into(), content: user_prompt },
     ];

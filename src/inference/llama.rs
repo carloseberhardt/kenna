@@ -8,7 +8,8 @@ use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_backend::LlamaBackend as LlamaInit;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
+use llama_cpp_2::model::{AddBos, LlamaModel};
+use llama_cpp_2::openai::OpenAIChatTemplateParams;
 
 use super::InferenceBackend;
 
@@ -369,32 +370,11 @@ impl InferenceBackend for LlamaBackend {
         user: &str,
         max_tokens: u32,
     ) -> Result<String> {
-        let gen_model = self
-            .generation_model
-            .as_ref()
-            .context("generation model not loaded")?;
-
-        // Build chat messages and apply the model's template
-        let system_msg = LlamaChatMessage::new(
-            "system".to_string(),
-            system.to_string(),
-        ).map_err(|e| anyhow::anyhow!("chat message error: {e}"))?;
-
-        let user_msg = LlamaChatMessage::new(
-            "user".to_string(),
-            user.to_string(),
-        ).map_err(|e| anyhow::anyhow!("chat message error: {e}"))?;
-
-        let template = gen_model
-            .chat_template(None)
-            .map_err(|e| anyhow::anyhow!("no chat template in model: {e}"))?;
-
-        let formatted = gen_model
-            .apply_chat_template(&template, &[system_msg, user_msg], true)
-            .map_err(|e| anyhow::anyhow!("chat template failed: {e}"))?;
-
-        // Use grammar-constrained generation for structured JSON output
-        self.generate_with_grammar(&formatted, max_tokens)
+        let messages = [
+            super::ChatMessage { role: "system".to_string(), content: system.to_string() },
+            super::ChatMessage { role: "user".to_string(),   content: user.to_string() },
+        ];
+        self.generate_chat_multi(&messages, max_tokens)
     }
 
     fn generate_chat_multi(
@@ -407,20 +387,44 @@ impl InferenceBackend for LlamaBackend {
             .as_ref()
             .context("generation model not loaded")?;
 
-        let chat_messages: Vec<LlamaChatMessage> = messages.iter()
-            .map(|m| LlamaChatMessage::new(m.role.clone(), m.content.clone())
-                .map_err(|e| anyhow::anyhow!("chat message error: {e}")))
-            .collect::<Result<Vec<_>>>()?;
+        // Build OpenAI-format JSON for the messages. We route through
+        // apply_chat_template_oaicompat + use_jinja=true so the model's embedded
+        // Jinja chat template is rendered by llama.cpp's `common/` path — the
+        // same path that llama-server uses. This supports newer templates
+        // (e.g. Gemma 4's <|turn>...) that the C-API token-detector in
+        // llama_chat_apply_template does NOT recognize.
+        let messages_json = serde_json::to_string(
+            &messages.iter()
+                .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+                .collect::<Vec<_>>()
+        ).map_err(|e| anyhow::anyhow!("messages JSON encode failed: {e}"))?;
 
         let template = gen_model
             .chat_template(None)
             .map_err(|e| anyhow::anyhow!("no chat template in model: {e}"))?;
 
-        let formatted = gen_model
-            .apply_chat_template(&template, &chat_messages, true)
+        let params = OpenAIChatTemplateParams {
+            messages_json: &messages_json,
+            tools_json: None,
+            tool_choice: None,
+            json_schema: None,
+            grammar: None,
+            reasoning_format: None,
+            chat_template_kwargs: None,
+            add_generation_prompt: true,
+            use_jinja: true,
+            parallel_tool_calls: false,
+            enable_thinking: false,
+            add_bos: true,
+            add_eos: false,
+            parse_tool_calls: false,
+        };
+
+        let result = gen_model
+            .apply_chat_template_oaicompat(&template, &params)
             .map_err(|e| anyhow::anyhow!("chat template failed: {e}"))?;
 
-        self.generate_with_grammar(&formatted, max_tokens)
+        self.generate_with_grammar(&result.prompt, max_tokens)
     }
 
     fn embed(&self, text: &str) -> Result<Vec<f32>> {

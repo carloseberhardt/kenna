@@ -99,50 +99,61 @@ Search terms for investigating: `llama.cpp GBNF grammar crash abort sampler`,
 - `extract.rs::split_json_objects()` — string-context-aware object splitting for
   recovering individual candidates from malformed arrays
 
-### Gemma 4 upgrade — blocked on C API chat template gap
+### Chat template: use oaicompat + use_jinja, not apply_chat_template
 
-We have Gemma 4 E4B and 26B-A4B GGUF files downloaded in `~/.local/share/engram/models/`
-but still cannot use them. Testing history:
+`src/inference/llama.rs` routes chat messages through
+`LlamaModel::apply_chat_template_oaicompat(&template, &params)` with
+`use_jinja: true` and `add_bos: true`, **not** the older
+`LlamaModel::apply_chat_template()`.
 
-**2026-04-06 test (llama-cpp-2 via ysimonson/gemma4 PR branch):**
-- Model loaded ✓
-- `apply_chat_template()` returned -1 ✗ — `LLM_CHAT_TEMPLATE_UNKNOWN`
+Why: `apply_chat_template()` binds to the C API `llama_chat_apply_template`,
+which uses a hand-coded token-substring detector in
+`src/llama-chat.cpp::llm_chat_detect_template()` — e.g. `<start_of_turn>`
+implies `LLM_CHAT_TEMPLATE_GEMMA`. Newer templates that don't match any
+substring (Gemma 4's `<|turn>`, for example) return `LLM_CHAT_TEMPLATE_UNKNOWN`
+and the function fails with FFI -1. The oaicompat path binds to a separate
+C wrapper that calls `common_chat_templates_apply` — the Jinja-based engine
+in `common/chat.cpp` that `llama-server` uses. That path renders the model's
+embedded Jinja chat template directly, so new templates work out of the box.
 
-**2026-04-14 retest (llama-cpp-2 0.1.144 via utilityai/main branch):**
-- Model loaded ✓
-- `apply_chat_template()` STILL returned -1 ✗ — `chat template failed: ffi error -1`
+BOS handling: `add_bos: true` tells the Jinja runtime to **strip** any
+leading `bos_token` string the template emits (see
+`common/chat.cpp:779`), so the caller is expected to re-add BOS at tokenize
+time. That matches our `str_to_token(prompt, AddBos::Always)` in
+`generate_with_grammar()`. Uniform behavior across Gemma 3 (whose template
+has no `{{bos_token}}`) and Gemma 4 (whose template does).
 
-**Root cause:** PRs #21326 and #21418 fixed Gemma 4 templates in the `common/`
-directory (used by `llama-server`'s Jinja-based template system), but **did not
-update `src/llama-chat.cpp::llm_chat_detect_template()`** — the C API function
-that `llama-cpp-2` binds to. The C-level detector still only matches Gemma via
-`<start_of_turn>` substring. Gemma 4's template uses `<|turn>` markers instead,
-so detection returns `LLM_CHAT_TEMPLATE_UNKNOWN` and the function returns -1.
+### Gemma 4 extraction — works but JSON output is flakier than Gemma 3
 
-**No open issue or PR specifically tracks this gap** as of 2026-04-14. The
-Gemma 4 upstream work has been focused on server-side and kernel fusion.
+As of 2026-04-22 (after the oaicompat migration above), Gemma 4 E4B loads,
+applies its chat template, and extracts end-to-end. Apples-to-apples test
+on session `e12417b5` (8 chunks) comparing the same Q6_K precision:
 
-**Options when we revisit:**
-1. Wait for someone to add `LLM_CHAT_TEMPLATE_GEMMA4` detection to `llama-chat.cpp`
-2. File an issue upstream describing the C API gap
-3. Work around it in our code: bypass `apply_chat_template()` and manually
-   format prompts with `<|turn>user\n...<|turn>model\n` via raw `generate()`.
-   Would need a model-specific code path in `src/inference/llama.rs`.
+| Model | Extracted | Parse fails | Curation kept | Accepted |
+|---|---|---|---|---|
+| Gemma 3 4B Q6_K | 15 | 0/8 | 53% | 7 |
+| Gemma 4 E4B Q6_K (bartowski imatrix) | 10 | 2/8 | 80% | 7 |
 
-**Inference bug status (separate concern, fixed):** PR #21566 (CUDA/HIP buffer
-overlap in GEMV fusion, merged April 7) fixed the `<unused>` token spam that
-would have bitten us after the template fix. Confirmed in the submodule we
-tested with. When we do get the template issue resolved, inference should work.
+Gemma 4 is more selective — fewer candidates, higher quality per candidate —
+but **loses whole chunks to JSON output errors that Gemma 3 doesn't produce**:
+- Unescaped literal double quotes inside content strings (`"...complex, "real" long-term..."`)
+- Occasional missing `confidence` / `scope_confidence` fields
 
-**CHECK ON EACH VISIT**:
-- Search for issues/PRs mentioning `llama-chat.cpp` and Gemma 4:
-  `gh api 'search/issues?q=repo:ggml-org/llama.cpp+llama-chat.cpp+gemma4'`
-- Check llama-cpp-rs releases: `gh api repos/utilityai/llama-cpp-rs/releases/latest`
-- If the C API gap is filled, retry with git dep on main and the same
-  `--session 6d2e38ba` test from `cli/reconcile.rs`.
+Neither is a quantization artifact (tested Q4_K_M → Q6_K, same failures).
+Both are Gemma 4 behavioral differences. Options if we want to lean on G4:
+1. Prompt tuning — add explicit "escape all interior double quotes" rule
+2. Make schema permissive — default confidences when missing
+3. Post-process repair — detect unescaped quotes in content values and escape them
 
-**On Unsloth vs ggml-org GGUFs**: We have ggml-org quants currently. The
-template issue affects both since it's in llama.cpp's detector, not the quant.
+Not acted on yet; Gemma 3 4B remains the default extraction model.
+
+**On the 26B-A4B settling model:** untested with the new API path. The 26B
+at Q4_K_M is ~17 GB — borderline on 20 GB VRAM alongside overhead. That's
+a separate investigation.
+
+**On GGUF choice for E4B**: we use `bartowski/google_gemma-4-E4B-it-Q6_K.gguf`
+(imatrix-calibrated). At Q6 and above, imatrix gives only a small edge vs
+ggml-org's uniform quants; below Q4 the gap matters more.
 
 ### Extraction model selection
 
@@ -196,6 +207,43 @@ faster prompt prefill (long prompts relative to short outputs).
 
 `HIP_VISIBLE_DEVICES=0` is set in code to ensure the discrete GPU (7900 XT)
 is used instead of the integrated GPU (Raphael). This is set before model loading.
+
+### Re-running reconcile on an already-processed session (testing workflow)
+
+The cursor at `~/.local/share/engram/state/cursor.json` records `(mtime,
+byte_offset)` per processed session file. `reconcile --session <prefix>`
+filters the session list but does **not** bypass the cursor — an
+already-processed session will be skipped silently with "No candidates
+extracted."
+
+To test a specific session (e.g. A/B comparing models), temporarily remove
+its cursor entry, run reconcile, then restore:
+
+```
+# 1. back up
+cp ~/.local/share/engram/state/cursor.json /tmp/cursor.bak
+
+# 2. delete the entry (filename format: <project-dir>/<uuid>.jsonl)
+python3 -c "
+import json; p='/home/carlose/.local/share/engram/state/cursor.json'
+with open(p) as f: c=json.load(f)
+c['processed'].pop('-home-carlose-projects-FOO/<uuid>.jsonl')
+with open(p,'w') as f: json.dump(c,f,indent=2)"
+
+# 3. run the test
+cargo run -- reconcile --session <uuid-prefix> [--model <gguf>]
+
+# 4. restore
+cp /tmp/cursor.bak ~/.local/share/engram/state/cursor.json
+```
+
+Reprocessed engrams may only partially dedup (temp=1.0 is non-deterministic),
+so the DB can end up with near-duplicates. `engram settle` handles that, or
+delete the extra engrams by hand.
+
+Subagent `agent-aside_question-*.jsonl` files and `<uuid>/` directories
+(without `.jsonl`) do exist in `~/.claude/projects/` but are **not** main
+sessions — confirm the filename exists before editing the cursor.
 
 ## CLI Commands
 

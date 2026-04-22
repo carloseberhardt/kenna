@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodic engram reconciliation
+Description=Periodic Kenna reconciliation
 
 [Timer]
 # Every 2 hours. Cross-session continuity is the value — intra-session

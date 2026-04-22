@@ -10,7 +10,7 @@ use crate::pipeline::extract::extract_from_chunk;
 use crate::pipeline::preprocess::{preprocess_session, ConversationChunk};
 use crate::pipeline::reconcile::{reconcile_candidates, ReconcileOutcome};
 use crate::storage::cursor::Cursor;
-use crate::storage::db::EngramDb;
+use crate::storage::db::MemoryDb;
 
 use crate::pipeline::extract::ExtractedCandidate;
 
@@ -303,7 +303,7 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
         0,
     )?;
 
-    let db = EngramDb::open(&Config::db_path()).await?;
+    let db = MemoryDb::open(&Config::db_path()).await?;
     let mut total_accepted = 0usize;
     let mut total_candidates = 0usize;
     let mut total_dropped = 0usize;

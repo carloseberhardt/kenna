@@ -8,16 +8,16 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use uuid::Uuid;
 
 use super::models::{
-    Category, Engram, Lifecycle, Scope, arrow_schema,
+    Category, Memory, Lifecycle, Scope, arrow_schema,
 };
 
-const TABLE_NAME: &str = "engrams";
+const TABLE_NAME: &str = "memories";
 
-pub struct EngramDb {
+pub struct MemoryDb {
     conn: Connection,
 }
 
-impl EngramDb {
+impl MemoryDb {
     pub async fn open(db_path: &Path) -> Result<Self> {
         std::fs::create_dir_all(db_path)?;
         let conn = lancedb::connect(db_path.to_str().unwrap())
@@ -41,17 +41,17 @@ impl EngramDb {
         }
     }
 
-    pub async fn insert(&self, engrams: Vec<Engram>) -> Result<()> {
-        if engrams.is_empty() {
+    pub async fn insert(&self, memories: Vec<Memory>) -> Result<()> {
+        if memories.is_empty() {
             return Ok(());
         }
         let table = self.ensure_table().await?;
-        let reader = Engram::to_record_batch_reader(engrams);
+        let reader = Memory::to_record_batch_reader(memories);
         table.add(reader).execute().await?;
         Ok(())
     }
 
-    pub async fn list(&self, filters: &ListFilters) -> Result<Vec<Engram>> {
+    pub async fn list(&self, filters: &ListFilters) -> Result<Vec<Memory>> {
         let table = match self.open_table_if_exists().await? {
             Some(t) => t,
             None => return Ok(vec![]),
@@ -84,14 +84,14 @@ impl EngramDb {
             .limit(limit)
             .execute()
             .await
-            .context("failed to query engrams")?
+            .context("failed to query memories")?
             .try_collect::<Vec<RecordBatch>>()
             .await?;
 
-        batches_to_engrams(&batches)
+        batches_to_memories(&batches)
     }
 
-    pub async fn get_by_id(&self, id: &Uuid) -> Result<Option<Engram>> {
+    pub async fn get_by_id(&self, id: &Uuid) -> Result<Option<Memory>> {
         let table = match self.open_table_if_exists().await? {
             Some(t) => t,
             None => return Ok(None),
@@ -107,8 +107,8 @@ impl EngramDb {
             .try_collect::<Vec<RecordBatch>>()
             .await?;
 
-        let engrams = batches_to_engrams(&batches)?;
-        Ok(engrams.into_iter().next())
+        let memories = batches_to_memories(&batches)?;
+        Ok(memories.into_iter().next())
     }
 
     /// Vector similarity search using an embedding query.
@@ -117,7 +117,7 @@ impl EngramDb {
         query_embedding: Vec<f32>,
         limit: usize,
         scope_filter: Option<Scope>,
-    ) -> Result<Vec<Engram>> {
+    ) -> Result<Vec<Memory>> {
         let table = match self.open_table_if_exists().await? {
             Some(t) => t,
             None => return Ok(vec![]),
@@ -129,7 +129,7 @@ impl EngramDb {
             .column("embedding")
             .limit(limit);
 
-        // Only return accepted engrams by default
+        // Only return accepted memories by default
         let mut filter_parts = vec!["lifecycle = 'accepted'".to_string()];
         if let Some(scope) = scope_filter {
             filter_parts.push(format!("scope = '{scope}'"));
@@ -143,13 +143,13 @@ impl EngramDb {
             .try_collect::<Vec<RecordBatch>>()
             .await?;
 
-        batches_to_engrams(&batches)
+        batches_to_memories(&batches)
     }
 
     pub async fn delete(&self, id: &Uuid) -> Result<()> {
         let table = match self.open_table_if_exists().await? {
             Some(t) => t,
-            None => bail!("no engrams table found"),
+            None => bail!("no memories table found"),
         };
         let filter = format!("id = '{id}'");
         table.delete(&filter).await?;
@@ -158,12 +158,12 @@ impl EngramDb {
 
     pub async fn update_lifecycle(&self, id: &Uuid, lifecycle: Lifecycle) -> Result<()> {
         // LanceDB doesn't have a direct update API — we read, delete, and re-insert.
-        let engram = self
+        let memory = self
             .get_by_id(id)
             .await?
-            .context("engram not found")?;
+            .context("memory not found")?;
 
-        let mut updated = engram;
+        let mut updated = memory;
         updated.lifecycle = lifecycle;
         updated.updated_at = Utc::now();
 
@@ -173,12 +173,12 @@ impl EngramDb {
     }
 
     pub async fn update_scope(&self, id: &Uuid, scope: Scope) -> Result<()> {
-        let engram = self
+        let memory = self
             .get_by_id(id)
             .await?
-            .context("engram not found")?;
+            .context("memory not found")?;
 
-        let mut updated = engram;
+        let mut updated = memory;
         updated.scope = scope;
         updated.updated_at = Utc::now();
 
@@ -187,14 +187,14 @@ impl EngramDb {
         Ok(())
     }
 
-    /// Mark an existing engram as superseded by a new one.
+    /// Mark an existing memory as superseded by a new one.
     pub async fn mark_superseded(&self, old_id: &Uuid, new_id: &Uuid) -> Result<()> {
-        let engram = self
+        let memory = self
             .get_by_id(old_id)
             .await?
-            .context("engram not found")?;
+            .context("memory not found")?;
 
-        let mut updated = engram;
+        let mut updated = memory;
         updated.superseded_by = Some(*new_id);
         updated.updated_at = Utc::now();
 
@@ -203,7 +203,7 @@ impl EngramDb {
         Ok(())
     }
 
-    pub async fn count(&self) -> Result<EngramStats> {
+    pub async fn count(&self) -> Result<MemoryStats> {
         let all = self
             .list(&ListFilters {
                 limit: Some(100_000),
@@ -211,7 +211,7 @@ impl EngramDb {
             })
             .await?;
 
-        let mut stats = EngramStats::default();
+        let mut stats = MemoryStats::default();
         for e in &all {
             stats.total += 1;
             match e.scope {
@@ -228,7 +228,7 @@ impl EngramDb {
         Ok(stats)
     }
 
-    pub async fn export_all(&self) -> Result<Vec<Engram>> {
+    pub async fn export_all(&self) -> Result<Vec<Memory>> {
         self.list(&ListFilters {
             limit: Some(100_000),
             ..Default::default()
@@ -253,12 +253,12 @@ pub struct ListFilters {
     pub lifecycle: Option<Lifecycle>,
     pub entity: Option<String>,
     pub limit: Option<usize>,
-    /// If true, exclude engrams that have been superseded (superseded_by IS NULL).
+    /// If true, exclude memories that have been superseded (superseded_by IS NULL).
     pub exclude_superseded: bool,
 }
 
 #[derive(Debug, Default)]
-pub struct EngramStats {
+pub struct MemoryStats {
     pub total: usize,
     pub personal: usize,
     pub project: usize,
@@ -269,12 +269,12 @@ pub struct EngramStats {
 
 use futures::TryStreamExt;
 
-fn batches_to_engrams(batches: &[RecordBatch]) -> Result<Vec<Engram>> {
+fn batches_to_memories(batches: &[RecordBatch]) -> Result<Vec<Memory>> {
     use arrow_array::{
         Array, Float32Array, StringArray, TimestampMicrosecondArray,
     };
 
-    let mut engrams = Vec::new();
+    let mut memories = Vec::new();
 
     for batch in batches {
         let ids = batch.column_by_name("id").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
@@ -310,7 +310,7 @@ fn batches_to_engrams(batches: &[RecordBatch]) -> Result<Vec<Engram>> {
                 .values()
                 .to_vec();
 
-            engrams.push(Engram {
+            memories.push(Memory {
                 id: ids.value(i).parse()?,
                 content: contents.value(i).to_string(),
                 embedding: embedding_values,
@@ -351,7 +351,7 @@ fn batches_to_engrams(batches: &[RecordBatch]) -> Result<Vec<Engram>> {
         }
     }
 
-    Ok(engrams)
+    Ok(memories)
 }
 
 fn micros_to_dt(micros: i64) -> DateTime<Utc> {

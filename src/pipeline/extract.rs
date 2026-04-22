@@ -12,7 +12,7 @@ fn default_scope_confidence() -> f32 {
     0.5
 }
 
-/// A raw extracted engram candidate from the LLM.
+/// A raw extracted memory candidate from the LLM.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExtractedCandidate {
     pub content: String,
@@ -100,7 +100,7 @@ Assistant: Makes sense, I'll focus on the end-to-end flow.
 // Demonstrates the single-quote rule for scare-quotes inside content.
 const FEWSHOT_ASSISTANT_3: &str = r#"[{"content": "Values a polished end-to-end demo over a 'quick hack' prototype", "scope": "project", "category": "preference", "entity": "demo-quality", "confidence": 0.8, "scope_confidence": 0.6}]"#;
 
-/// Extract engram candidates from a conversation chunk using the LLM.
+/// Extract memory candidates from a conversation chunk using the LLM.
 pub fn extract_from_chunk(
     backend: &dyn InferenceBackend,
     chunk: &ConversationChunk,
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_parse_with_preamble() {
-        let input = "Here are the extracted engrams:\n[{\"content\": \"Test\", \"scope\": \"personal\", \"category\": \"fact\", \"entity\": \"test\", \"confidence\": 0.8}]";
+        let input = "Here are the extracted memories:\n[{\"content\": \"Test\", \"scope\": \"personal\", \"category\": \"fact\", \"entity\": \"test\", \"confidence\": 0.8}]";
         let result = parse_extraction_response(input).unwrap();
         assert_eq!(result.len(), 1);
     }

@@ -2,13 +2,13 @@ use anyhow::Result;
 use comfy_table::{Cell, Table};
 
 use crate::inference::InferenceBackend;
-use crate::storage::db::{EngramDb, ListFilters};
-use crate::storage::models::Engram;
+use crate::storage::db::{MemoryDb, ListFilters};
+use crate::storage::models::Memory;
 
-/// Search engrams. Uses vector search if an inference backend is provided,
+/// Search memories. Uses vector search if an inference backend is provided,
 /// otherwise falls back to keyword search.
 pub async fn run(
-    db: &EngramDb,
+    db: &MemoryDb,
     query: &str,
     limit: usize,
     backend: Option<&dyn InferenceBackend>,
@@ -21,7 +21,7 @@ pub async fn run(
     };
 
     if matches.is_empty() {
-        println!("No engrams matching '{query}'.");
+        println!("No memories matching '{query}'.");
         return Ok(());
     }
 
@@ -30,7 +30,7 @@ pub async fn run(
     Ok(())
 }
 
-async fn keyword_search(db: &EngramDb, query: &str, limit: usize) -> Result<Vec<Engram>> {
+async fn keyword_search(db: &MemoryDb, query: &str, limit: usize) -> Result<Vec<Memory>> {
     let all = db
         .list(&ListFilters {
             limit: Some(100_000),
@@ -51,7 +51,7 @@ async fn keyword_search(db: &EngramDb, query: &str, limit: usize) -> Result<Vec<
         .collect())
 }
 
-fn print_results(matches: &[Engram]) {
+fn print_results(matches: &[Memory]) {
     let mut table = Table::new();
     table.set_header(vec!["ID", "Scope", "Category", "Conf", "Content"]);
 

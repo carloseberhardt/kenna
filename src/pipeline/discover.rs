@@ -10,7 +10,7 @@ pub struct SessionFile {
     /// Path to the JSONL file.
     pub path: PathBuf,
     /// The project directory name as Claude Code encodes it.
-    /// e.g. "-home-carlose-projects-engram"
+    /// e.g. "-home-carlose-projects-kenna"
     pub project_dir_name: String,
     /// Session ID extracted from filename.
     pub session_id: String,
@@ -234,6 +234,6 @@ mod tests {
             "-home-carlose-projects-ralph-trader",
             &exclusions
         ));
-        assert!(!is_excluded("-home-carlose-projects-engram", &exclusions));
+        assert!(!is_excluded("-home-carlose-projects-kenna", &exclusions));
     }
 }

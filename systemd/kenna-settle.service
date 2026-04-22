@@ -1,5 +1,5 @@
 [Unit]
-Description=Engram settling pass
+Description=Kenna settling pass
 # Allow up to 4 starts per day. GPU contention is handled by the
 # VRAM check in the binary (soft-exits cleanly if GPU is busy).
 StartLimitBurst=4
@@ -7,5 +7,5 @@ StartLimitIntervalSec=86400
 
 [Service]
 Type=oneshot
-ExecStart=%h/.cargo/bin/engram settle
+ExecStart=%h/.cargo/bin/kenna settle
 TimeoutStartSec=1800

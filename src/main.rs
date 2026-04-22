@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
     // RUST_LOG env var takes precedence over config if set.
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new(format!("engram={log_level}"))
+            tracing_subscriber::EnvFilter::new(format!("kenna={log_level}"))
         });
 
     tracing_subscriber::fmt()

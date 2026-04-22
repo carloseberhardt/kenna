@@ -1,5 +1,5 @@
 [Unit]
-Description=Engram reconciliation pipeline
+Description=Kenna reconciliation pipeline
 # Allow up to 6 starts per hour. Soft-exits from the VRAM check count
 # as successful exits (exit 0), but tight retry loops on fundamental
 # failures should still be caught.
@@ -8,8 +8,8 @@ StartLimitIntervalSec=3600
 
 [Service]
 Type=oneshot
-ExecStart=%h/.cargo/bin/engram reconcile
+ExecStart=%h/.cargo/bin/kenna reconcile
 # Reconcile can take 10+ minutes on large backlogs
 TimeoutStartSec=1800
-# Log level controlled by ~/.config/engram/config.toml (default: warn)
-# Override here for debugging: Environment=RUST_LOG=engram=info
+# Log level controlled by ~/.config/kenna/config.toml (default: warn)
+# Override here for debugging: Environment=RUST_LOG=kenna=info

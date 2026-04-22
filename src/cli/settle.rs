@@ -4,11 +4,11 @@ use crate::config::Config;
 use crate::inference::InferenceBackend;
 use crate::inference::llama::LlamaBackend;
 use crate::pipeline::settle::{run_settle, SettleReport};
-use crate::storage::db::EngramDb;
+use crate::storage::db::MemoryDb;
 
 pub async fn run(dry_run: bool) -> Result<()> {
     let config = Config::load()?;
-    let db = EngramDb::open(&Config::db_path()).await?;
+    let db = MemoryDb::open(&Config::db_path()).await?;
 
     if dry_run {
         println!("Running settle pass (dry run)...\n");
@@ -96,9 +96,9 @@ fn print_report(report: &SettleReport, dry_run: bool) {
                 prefix,
                 i + 1,
                 promo.distinct_projects,
-                promo.source_engrams.len(),
+                promo.source_memories.len(),
             );
-            for src in &promo.source_engrams {
+            for src in &promo.source_memories {
                 println!("  [{:>20}] {}", src.source_project, src.content);
             }
             if let Some(ref content) = promo.synthesized_content {
@@ -116,12 +116,12 @@ fn print_report(report: &SettleReport, dry_run: bool) {
         println!("\n── Entity Syntheses ──");
         for synthesis in &report.syntheses {
             println!(
-                "\n{} entity '{}' ({} engrams):",
+                "\n{} entity '{}' ({} memories):",
                 prefix,
                 synthesis.entity,
-                synthesis.source_engrams.len(),
+                synthesis.source_memories.len(),
             );
-            for src in &synthesis.source_engrams {
+            for src in &synthesis.source_memories {
                 println!("  (conf={:.2}) {}", src.confidence, src.content);
             }
             if let Some(ref content) = synthesis.synthesized_content {

@@ -14,11 +14,11 @@ use clap::{Parser, Subcommand};
 use crate::config::Config;
 use crate::inference::InferenceBackend;
 use crate::inference::llama::LlamaBackend;
-use crate::storage::db::EngramDb;
+use crate::storage::db::MemoryDb;
 use crate::storage::models::{Category, Lifecycle, Scope};
 
 #[derive(Parser)]
-#[command(name = "engram", about = "Durable, implicit memory for Claude Code")]
+#[command(name = "kenna", about = "Durable, implicit memory for Claude Code")]
 pub struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -41,7 +41,7 @@ enum Command {
         #[arg(long)]
         session: Option<String>,
     },
-    /// Consolidate engrams: cross-project promotion + entity synthesis
+    /// Consolidate memories: cross-project promotion + entity synthesis
     Settle {
         /// Preview what would change without making modifications
         #[arg(long)]
@@ -49,7 +49,7 @@ enum Command {
     },
     /// Start the MCP server (stdio transport, for Claude Code integration)
     Serve,
-    /// List engrams with optional filters
+    /// List memories with optional filters
     List {
         /// Filter by lifecycle: show only pending candidates
         #[arg(long)]
@@ -67,12 +67,12 @@ enum Command {
         #[arg(short = 'n', long, default_value = "20")]
         limit: usize,
     },
-    /// Show full details of a single engram
+    /// Show full details of a single memory
     Show {
-        /// Engram ID (UUID, prefix match supported)
+        /// Memory ID (UUID, prefix match supported)
         id: String,
     },
-    /// Search engrams (vector search if embedding model available, else keyword)
+    /// Search memories (vector search if embedding model available, else keyword)
     Search {
         /// Search query
         query: String,
@@ -80,26 +80,26 @@ enum Command {
         #[arg(short = 'n', long, default_value = "10")]
         limit: usize,
     },
-    /// Promote a candidate engram to accepted
+    /// Promote a candidate memory to accepted
     Accept {
-        /// Engram ID
+        /// Memory ID
         id: String,
     },
-    /// Delete an engram permanently
+    /// Delete a memory permanently
     Delete {
-        /// Engram ID
+        /// Memory ID
         id: String,
     },
-    /// Promote an engram from project scope to personal scope
+    /// Promote a memory from project scope to personal scope
     Promote {
-        /// Engram ID
+        /// Memory ID
         id: String,
     },
-    /// Show statistics about stored engrams
+    /// Show statistics about stored memories
     Stats,
-    /// Export all engrams as JSON
+    /// Export all memories as JSON
     Export,
-    /// Insert a test engram (development helper)
+    /// Insert a test memory (development helper)
     #[command(name = "debug-insert")]
     DebugInsert {
         /// Content text
@@ -123,7 +123,7 @@ impl Cli {
     pub async fn run(self) -> Result<()> {
         Config::ensure_dirs()?;
         let config = Config::load()?;
-        let db = EngramDb::open(&Config::db_path()).await?;
+        let db = MemoryDb::open(&Config::db_path()).await?;
 
         match self.command {
             Command::Reconcile { dry_run, limit, model, session } => {
@@ -167,18 +167,18 @@ impl Cli {
                 entity,
                 confidence,
             } => {
-                use crate::storage::models::Engram;
-                let mut engram =
-                    Engram::new_placeholder(content, scope, category, entity, confidence);
+                use crate::storage::models::Memory;
+                let mut memory =
+                    Memory::new_placeholder(content, scope, category, entity, confidence);
                 // Use real embeddings if model available
                 if let Some(backend) = try_load_embedding_backend(&config) {
-                    let embedding = backend.embed(&engram.content)?;
-                    engram.embedding = embedding;
-                    println!("Inserting engram {} (with embedding)", engram.id);
+                    let embedding = backend.embed(&memory.content)?;
+                    memory.embedding = embedding;
+                    println!("Inserting memory {} (with embedding)", memory.id);
                 } else {
-                    println!("Inserting engram {} (no embedding model)", engram.id);
+                    println!("Inserting memory {} (no embedding model)", memory.id);
                 }
-                db.insert(vec![engram]).await?;
+                db.insert(vec![memory]).await?;
                 println!("Done.");
                 Ok(())
             }

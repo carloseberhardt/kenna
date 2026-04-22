@@ -4,21 +4,21 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::inference::InferenceBackend;
-use crate::storage::db::EngramDb;
-use crate::storage::models::{Category, Engram, Lifecycle, Scope};
+use crate::storage::db::MemoryDb;
+use crate::storage::models::{Category, Memory, Lifecycle, Scope};
 
 use super::extract::ExtractedCandidate;
 
 /// Reconciliation outcome for a single candidate.
 #[derive(Debug)]
 pub enum ReconcileOutcome {
-    /// Stored as new engram.
+    /// Stored as new memory.
     Accepted(Uuid),
     /// Stored as candidate pending review.
     Candidate(Uuid),
     /// Dropped — confidence below threshold.
     DroppedLowConfidence(f32),
-    /// Dropped — duplicate of existing engram.
+    /// Dropped — duplicate of existing memory.
     DroppedDuplicate(Uuid),
     /// Dropped — invalid scope/category.
     DroppedInvalid(String),
@@ -37,7 +37,7 @@ pub async fn reconcile_candidates(
     candidates: Vec<ExtractedCandidate>,
     session_id: &str,
     project_dir_name: &str,
-    db: &EngramDb,
+    db: &MemoryDb,
     backend: &dyn InferenceBackend,
     config: &Config,
 ) -> Result<Vec<ReconcileOutcome>> {
@@ -63,7 +63,7 @@ async fn reconcile_one(
     candidate: ExtractedCandidate,
     session_id: &str,
     project_dir_name: &str,
-    db: &EngramDb,
+    db: &MemoryDb,
     backend: &dyn InferenceBackend,
     config: &Config,
 ) -> Result<ReconcileOutcome> {
@@ -129,7 +129,7 @@ async fn reconcile_one(
     //   e.g., "Prefers Vim" → "Switched to Neovim"
     // Below 0.7 = different facts about the same topic → coexist.
     //   e.g., "Values simplicity" and "Values testability" under design-philosophy.
-    // Merge/combine of related-but-distinct engrams is deferred to the settling pass.
+    // Merge/combine of related-but-distinct memories is deferred to the settling pass.
     let mut supersedes_ids: Vec<Uuid> = Vec::new();
     if let Some(ref entity) = candidate.entity {
         let entity_matches = db
@@ -141,14 +141,14 @@ async fn reconcile_one(
             .await?;
 
         for existing in &entity_matches {
-            // Skip already-superseded engrams
+            // Skip already-superseded memories
             if existing.superseded_by.is_some() {
                 continue;
             }
             let similarity = cosine_similarity(&embedding, &existing.embedding);
             if similarity >= config.supersession_cosine_min && similarity < config.supersession_cosine_max {
                 tracing::info!(
-                    "Superseding engram {} (entity={entity}, similarity={similarity:.3}): \"{}\" → \"{}\"",
+                    "Superseding memory {} (entity={entity}, similarity={similarity:.3}): \"{}\" → \"{}\"",
                     &existing.id.to_string()[..8],
                     crate::pipeline::curate::truncate_str(&existing.content, 50),
                     crate::pipeline::curate::truncate_str(&candidate.content, 50),
@@ -169,7 +169,7 @@ async fn reconcile_one(
     // If superseding, point to the most recent one we're replacing
     let supersedes = supersedes_ids.first().copied();
 
-    let engram = Engram {
+    let memory = Memory {
         id: Uuid::new_v4(),
         content: candidate.content,
         embedding,
@@ -188,14 +188,14 @@ async fn reconcile_one(
         superseded_by: None,
     };
 
-    let id = engram.id;
-    db.insert(vec![engram]).await?;
+    let id = memory.id;
+    db.insert(vec![memory]).await?;
 
-    // Mark superseded engrams with back-link to the new one
+    // Mark superseded memories with back-link to the new one
     for old_id in &supersedes_ids {
         if let Err(e) = db.mark_superseded(old_id, &id).await {
             tracing::warn!(
-                "Failed to mark engram {} as superseded: {e}",
+                "Failed to mark memory {} as superseded: {e}",
                 &old_id.to_string()[..8],
             );
         }

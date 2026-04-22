@@ -1729,34 +1729,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "engram"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arrow",
- "arrow-array",
- "arrow-schema",
- "atty",
- "chrono",
- "clap",
- "comfy-table",
- "dirs",
- "encoding_rs",
- "futures",
- "lancedb",
- "llama-cpp-2",
- "rmcp",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "enumflags2"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2601,6 +2573,34 @@ dependencies = [
  "serde",
  "serde_json",
  "zmij",
+]
+
+[[package]]
+name = "kenna"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
+ "atty",
+ "chrono",
+ "clap",
+ "comfy-table",
+ "dirs",
+ "encoding_rs",
+ "futures",
+ "lancedb",
+ "llama-cpp-2",
+ "rmcp",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

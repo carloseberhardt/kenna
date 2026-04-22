@@ -12,17 +12,17 @@ use tokio::sync::Mutex;
 use crate::config::Config;
 use crate::inference::llama::LlamaBackend;
 use crate::inference::InferenceBackend;
-use crate::storage::db::EngramDb;
+use crate::storage::db::MemoryDb;
 use crate::storage::models::Scope;
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct EngramRecallParams {
+struct KennaRecallParams {
     /// What you want to recall — a natural language description of the context, topic, or question
     query: String,
     /// Optional scope filter. "personal" for knowledge true about the user regardless of project (hardware, preferences, interests). "project" for codebase-specific decisions and patterns. Omit to search both.
     #[serde(default)]
     scope: Option<String>,
-    /// Maximum number of engrams to return
+    /// Maximum number of memories to return
     #[serde(default = "default_limit")]
     limit: i32,
 }
@@ -32,14 +32,14 @@ fn default_limit() -> i32 {
 }
 
 #[derive(Clone)]
-pub struct EngramServer {
+pub struct KennaServer {
     tool_router: ToolRouter<Self>,
-    db: Arc<Mutex<EngramDb>>,
+    db: Arc<Mutex<MemoryDb>>,
     backend: Arc<LlamaBackend>,
 }
 
 #[tool_router]
-impl EngramServer {
+impl KennaServer {
     /// Recall what you know about the user from past interactions. Returns facts,
     /// preferences, decisions, interests, opinions, and patterns drawn from the
     /// user's history across all Claude Code sessions. Call this when context about
@@ -49,32 +49,32 @@ impl EngramServer {
     /// person, not as search results to present.
     ///
     /// The "project" scope filters to knowledge from specific codebases. Include
-    /// the project directory name (e.g., "engram", "ralph-trader") in your query
+    /// the project directory name (e.g., "kenna", "ralph-trader") in your query
     /// to find project-specific decisions and patterns. The "personal" scope
     /// returns knowledge true about the user regardless of project.
-    #[tool(name = "engram_recall")]
-    async fn engram_recall(
+    #[tool(name = "kenna_recall")]
+    async fn kenna_recall(
         &self,
-        Parameters(params): Parameters<EngramRecallParams>,
+        Parameters(params): Parameters<KennaRecallParams>,
     ) -> String {
         match self.do_recall(params).await {
             Ok(result) => result,
-            Err(e) => format!("Error recalling engrams: {e}"),
+            Err(e) => format!("Error recalling memories: {e}"),
         }
     }
 }
 
 #[tool_handler]
-impl ServerHandler for EngramServer {
+impl ServerHandler for KennaServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::default().with_server_info(
-            Implementation::new("engram", env!("CARGO_PKG_VERSION"))
+            Implementation::new("kenna", env!("CARGO_PKG_VERSION"))
         )
     }
 }
 
-impl EngramServer {
-    pub fn new(db: EngramDb, backend: LlamaBackend) -> Self {
+impl KennaServer {
+    pub fn new(db: MemoryDb, backend: LlamaBackend) -> Self {
         Self {
             tool_router: Self::tool_router(),
             db: Arc::new(Mutex::new(db)),
@@ -82,7 +82,7 @@ impl EngramServer {
         }
     }
 
-    async fn do_recall(&self, params: EngramRecallParams) -> Result<String> {
+    async fn do_recall(&self, params: KennaRecallParams) -> Result<String> {
         let scope_filter = params
             .scope
             .as_deref()
@@ -100,40 +100,40 @@ impl EngramServer {
             .vector_search(embedding, limit, scope_filter)
             .await?;
 
-        // Filter out superseded engrams — only show the latest version
+        // Filter out superseded memories — only show the latest version
         let results: Vec<_> = results
             .into_iter()
             .filter(|e| e.superseded_by.is_none())
             .collect();
 
         if results.is_empty() {
-            return Ok("No relevant engrams found.".to_string());
+            return Ok("No relevant memories found.".to_string());
         }
 
         // Format results as readable text
         let mut output = String::new();
-        for (i, engram) in results.iter().enumerate() {
+        for (i, memory) in results.iter().enumerate() {
             if i > 0 {
                 output.push('\n');
             }
-            let scope_tag = match engram.scope {
+            let scope_tag = match memory.scope {
                 Scope::Personal => "personal",
                 Scope::Project => "project",
             };
-            let entity_str = engram
+            let entity_str = memory
                 .entity
                 .as_deref()
                 .map(|e| format!(" [{e}]"))
                 .unwrap_or_default();
             output.push_str(&format!(
                 "- ({scope_tag}/{category}{entity_str}) {content}",
-                category = engram.category,
-                content = engram.content,
+                category = memory.category,
+                content = memory.content,
             ));
         }
 
         // Update accessed_at timestamps (best-effort, don't fail the recall)
-        // TODO: batch update accessed_at for retrieved engrams
+        // TODO: batch update accessed_at for retrieved memories
 
         Ok(output)
     }
@@ -153,13 +153,13 @@ pub async fn run_server() -> Result<()> {
         );
     }
 
-    eprintln!("engram: loading embedding model...");
+    eprintln!("kenna: loading embedding model...");
     let backend = LlamaBackend::embedding_only(embed_path.to_str().unwrap(), 0)?;
 
-    let db = EngramDb::open(&Config::db_path()).await?;
+    let db = MemoryDb::open(&Config::db_path()).await?;
 
-    let server = EngramServer::new(db, backend);
-    eprintln!("engram: MCP server ready");
+    let server = KennaServer::new(db, backend);
+    eprintln!("kenna: MCP server ready");
 
     let (stdin, stdout) = rmcp::transport::stdio();
     let service = server

@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily engram settling pass (cross-project promotion + entity synthesis)
+Description=Daily Kenna settling pass (cross-project promotion + entity synthesis)
 
 [Timer]
 OnCalendar=*-*-* 03:00:00

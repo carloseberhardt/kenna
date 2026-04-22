@@ -15,7 +15,7 @@ pub struct Config {
     pub curation_model: String,
     pub embedding_model: String,
     pub embedding_dimensions: usize,
-    /// Cosine similarity above which two engrams are considered duplicates.
+    /// Cosine similarity above which two memories are considered duplicates.
     pub dedup_cosine_threshold: f32,
     /// Cosine similarity range for supersession (same entity, updated claim).
     /// Min: lower bound (below this, facts coexist). Max: upper bound (above this, it's a duplicate).
@@ -89,8 +89,8 @@ impl Default for ReconcileConfig {
 pub struct SettleConfig {
     /// Minimum distinct projects for a project-scoped pattern to be promoted to personal.
     pub min_projects_for_promotion: usize,
-    /// Minimum non-superseded engrams under an entity to trigger synthesis.
-    pub min_engrams_for_synthesis: usize,
+    /// Minimum non-superseded memories under an entity to trigger synthesis.
+    pub min_memories_for_synthesis: usize,
     /// Cosine similarity threshold for cross-project clustering.
     pub cluster_cosine_threshold: f32,
     /// Maximum cluster size to prevent chaining artifacts.
@@ -101,7 +101,7 @@ impl Default for SettleConfig {
     fn default() -> Self {
         Self {
             min_projects_for_promotion: 3,
-            min_engrams_for_synthesis: 3,
+            min_memories_for_synthesis: 3,
             cluster_cosine_threshold: 0.75,
             max_cluster_size: 10,
         }
@@ -123,14 +123,14 @@ impl Config {
     pub fn config_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("~/.config"))
-            .join("engram")
+            .join("kenna")
             .join("config.toml")
     }
 
     pub fn data_dir() -> PathBuf {
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("~/.local/share"))
-            .join("engram")
+            .join("kenna")
     }
 
     pub fn db_path() -> PathBuf {

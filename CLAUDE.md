@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Engram is an implicit, user-scoped memory system for Claude Code. It extracts durable knowledge about the user from Claude Code session transcripts (JSONL) and makes it available via a read-only MCP tool (`engram_recall`). It is distinct from Claude Code's built-in project memory — engram captures *implicit* knowledge that accumulates without conscious effort, while `/remember` and `CLAUDE.md` handle explicit, project-scoped notes.
+Kenna is an implicit, user-scoped memory system for Claude Code. It extracts durable knowledge about the user from Claude Code session transcripts (JSONL) and makes it available via a read-only MCP tool (`kenna_recall`). It is distinct from Claude Code's built-in project memory — Kenna captures *implicit* knowledge that accumulates without conscious effort, while `/remember` and `CLAUDE.md` handle explicit, project-scoped notes.
 
 ## Build & Run
 
@@ -13,7 +13,7 @@ cargo build                  # Build (first build is slow — llama.cpp compiles
 cargo run -- <subcommand>    # Run CLI
 cargo run -- reconcile --dry-run  # Preview what would be processed
 cargo run -- reconcile       # Full extraction + curation + storage pipeline
-cargo run -- list            # List engrams
+cargo run -- list            # List memories
 cargo run -- search <query>  # Semantic vector search
 cargo run -- serve           # Start MCP server (stdio, for Claude Code)
 cargo run -- stats           # Show counts
@@ -22,20 +22,20 @@ cargo run -- stats           # Show counts
 ## Architecture
 
 - **Language**: Rust (edition 2024)
-- **Binary**: `engram`
+- **Binary**: `kenna`
 - **Vector store**: LanceDB 0.27 (embedded, Arrow-backed)
 - **LLM inference**: `llama-cpp-2` 0.1 (currently resolving to 0.1.143) with ROCm backend (AMD GPU)
 - **Extraction model**: Gemma 3 4B IT Q6_K GGUF (~3.2GB) — fast structured extraction
 - **Curation model**: Qwen3 8B Q4_K_M GGUF (~5GB) — thinking model for quality filtering
 - **Embedding model**: nomic-embed-text v1.5 Q8_0 GGUF (~138MB, CPU)
-- **Data dir**: `~/.local/share/engram/` (db, models, state, logs)
-- **Config**: `~/.config/engram/config.toml`
+- **Data dir**: `~/.local/share/kenna/` (db, models, state, logs)
+- **Config**: `~/.config/kenna/config.toml`
 
 ### Three-Phase Reconcile Pipeline
 
 Models are loaded sequentially to manage GPU memory:
 
-1. **Extract** (Gemma 3 4B on GPU) — processes preprocessed conversation chunks via multi-turn few-shot chat, produces candidate engrams as JSON. Few-shot examples are in assistant turns (not system prompt) to avoid hallucination contamination.
+1. **Extract** (Gemma 3 4B on GPU) — processes preprocessed conversation chunks via multi-turn few-shot chat, produces candidate memories as JSON. Few-shot examples are in assistant turns (not system prompt) to avoid hallucination contamination.
 2. **Curate** (Qwen3 8B on GPU) — per-chunk verification against source text. Strips `<think>` blocks before parsing. Drops hallucinations, bare choices without reasoning, session events, and trivia. Fixes scope misclassification. Outputs reason field for diagnostics.
 3. **Embed + Reconcile** (nomic-embed on CPU) — dedup via cosine similarity, confidence gating, store to LanceDB
 
@@ -56,9 +56,9 @@ src/
     curate.rs          # Curation prompt + keep/drop/merge decisions
     reconcile.rs       # Dedup, supersession, confidence gating, storage
   mcp/
-    server.rs          # rmcp-based stdio MCP server, engram_recall tool
+    server.rs          # rmcp-based stdio MCP server, kenna_recall tool
   storage/
-    models.rs          # Engram struct, enums, Arrow schema, RecordBatch conversion
+    models.rs          # Memory struct, enums, Arrow schema, RecordBatch conversion
     db.rs              # LanceDB operations (insert, list, get, delete, vector_search)
     cursor.rs          # Incremental processing cursor (tracks processed sessions)
   inference/
@@ -118,7 +118,7 @@ help with either):
 - `extract.rs::parse_extraction_response()` — multi-stage fallback parser:
   code fence stripping, `[`-to-`]` extraction, object-level salvage for missing
   braces, multi-array bracket-depth splitting (`find_array_boundary`), truncation
-  repair (`repair_truncated_json`), debug dump to `~/.local/share/engram/debug/`
+  repair (`repair_truncated_json`), debug dump to `~/.local/share/kenna/debug/`
 - `curate.rs::strip_thinking_block()` — strips Qwen3 `<think>` blocks (separate
   issue from grammar, but related to JSON parsing robustness)
 - `extract.rs::split_json_objects()` — string-context-aware object splitting for
@@ -190,7 +190,7 @@ stripped before JSON parsing in `curate.rs::strip_thinking_block()`.
 **Gemma 3 recommended sampling**: temp=1.0, top_k=64, top_p=0.95 (per Google).
 Lower temperatures distort the model's calibration and cause worse output.
 
-To compare extraction models: `engram reconcile --limit 1 --model <filename.gguf>`
+To compare extraction models: `kenna reconcile --limit 1 --model <filename.gguf>`
 
 ### Extraction hallucination
 
@@ -235,7 +235,7 @@ is used instead of the integrated GPU (Raphael). This is set before model loadin
 
 ### Re-running reconcile on an already-processed session (testing workflow)
 
-The cursor at `~/.local/share/engram/state/cursor.json` records `(mtime,
+The cursor at `~/.local/share/kenna/state/cursor.json` records `(mtime,
 byte_offset)` per processed session file. `reconcile --session <prefix>`
 filters the session list but does **not** bypass the cursor — an
 already-processed session will be skipped silently with "No candidates
@@ -246,11 +246,11 @@ its cursor entry, run reconcile, then restore:
 
 ```
 # 1. back up
-cp ~/.local/share/engram/state/cursor.json /tmp/cursor.bak
+cp ~/.local/share/kenna/state/cursor.json /tmp/cursor.bak
 
 # 2. delete the entry (filename format: <project-dir>/<uuid>.jsonl)
 python3 -c "
-import json; p='/home/carlose/.local/share/engram/state/cursor.json'
+import json; p='/home/carlose/.local/share/kenna/state/cursor.json'
 with open(p) as f: c=json.load(f)
 c['processed'].pop('-home-carlose-projects-FOO/<uuid>.jsonl')
 with open(p,'w') as f: json.dump(c,f,indent=2)"
@@ -259,12 +259,12 @@ with open(p,'w') as f: json.dump(c,f,indent=2)"
 cargo run -- reconcile --session <uuid-prefix> [--model <gguf>]
 
 # 4. restore
-cp /tmp/cursor.bak ~/.local/share/engram/state/cursor.json
+cp /tmp/cursor.bak ~/.local/share/kenna/state/cursor.json
 ```
 
-Reprocessed engrams may only partially dedup (temp=1.0 is non-deterministic),
-so the DB can end up with near-duplicates. `engram settle` handles that, or
-delete the extra engrams by hand.
+Reprocessed memories may only partially dedup (temp=1.0 is non-deterministic),
+so the DB can end up with near-duplicates. `kenna settle` handles that, or
+delete the extra memories by hand.
 
 Subagent `agent-aside_question-*.jsonl` files and `<uuid>/` directories
 (without `.jsonl`) do exist in `~/.claude/projects/` but are **not** main
@@ -273,16 +273,16 @@ sessions — confirm the filename exists before editing the cursor.
 ## CLI Commands
 
 ```
-engram reconcile [--dry-run] [--limit N] [--model file.gguf] [--session ID_PREFIX]
-engram settle [--dry-run]   # Cross-project promotion + entity synthesis
-engram serve                # MCP server on stdio
-engram list [--pending] [--scope personal|project] [--category X] [--entity X]
-engram show <id>            # UUID prefix match supported
-engram search <query>       # Vector search if embedding model available
-engram accept <id>          # Candidate -> Accepted
-engram delete <id>
-engram promote <id>         # Project -> Personal scope
-engram stats
-engram export               # JSON to stdout
-engram debug-insert "..."   # Test helper with real embeddings
+kenna reconcile [--dry-run] [--limit N] [--model file.gguf] [--session ID_PREFIX]
+kenna settle [--dry-run]   # Cross-project promotion + entity synthesis
+kenna serve                # MCP server on stdio
+kenna list [--pending] [--scope personal|project] [--category X] [--entity X]
+kenna show <id>            # UUID prefix match supported
+kenna search <query>       # Vector search if embedding model available
+kenna accept <id>          # Candidate -> Accepted
+kenna delete <id>
+kenna promote <id>         # Project -> Personal scope
+kenna stats
+kenna export               # JSON to stdout
+kenna debug-insert "..."   # Test helper with real embeddings
 ```

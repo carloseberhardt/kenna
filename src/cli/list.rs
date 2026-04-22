@@ -1,11 +1,11 @@
 use anyhow::Result;
 use comfy_table::{Cell, Table};
 
-use crate::storage::db::{EngramDb, ListFilters};
+use crate::storage::db::{MemoryDb, ListFilters};
 use crate::storage::models::{Category, Lifecycle, Scope};
 
 pub async fn run(
-    db: &EngramDb,
+    db: &MemoryDb,
     scope: Option<Scope>,
     category: Option<Category>,
     lifecycle: Option<Lifecycle>,
@@ -21,23 +21,23 @@ pub async fn run(
         exclude_superseded: false, // we filter superseded in Rust below
     };
 
-    let all_engrams = db.list(&filters).await?;
+    let all_memories = db.list(&filters).await?;
 
-    // Hide superseded engrams by default — they've been replaced
-    let engrams: Vec<_> = all_engrams
+    // Hide superseded memories by default — they've been replaced
+    let memories: Vec<_> = all_memories
         .into_iter()
         .filter(|e| e.superseded_by.is_none())
         .collect();
 
-    if engrams.is_empty() {
-        println!("No engrams found.");
+    if memories.is_empty() {
+        println!("No memories found.");
         return Ok(());
     }
 
     let mut table = Table::new();
     table.set_header(vec!["ID", "Scope", "Category", "Lifecycle", "Conf", "Content"]);
 
-    for e in &engrams {
+    for e in &memories {
         let short_id = &e.id.to_string()[..8];
         let content_preview = if e.content.len() > 60 {
             format!("{}…", &e.content[..60])
@@ -55,6 +55,6 @@ pub async fn run(
     }
 
     println!("{table}");
-    println!("\n{} engram(s) shown.", engrams.len());
+    println!("\n{} memory(s) shown.", memories.len());
     Ok(())
 }

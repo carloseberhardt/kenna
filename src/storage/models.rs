@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Engram {
+pub struct Memory {
     pub id: Uuid,
     pub content: String,
     #[serde(skip)]
@@ -194,43 +194,43 @@ fn opt_uuid_to_string(u: &Option<Uuid>) -> Option<String> {
     u.as_ref().map(|id| id.to_string())
 }
 
-impl Engram {
-    /// Convert a batch of engrams into a RecordBatchReader for LanceDB insertion.
+impl Memory {
+    /// Convert a batch of memories into a RecordBatchReader for LanceDB insertion.
     pub fn to_record_batch_reader(
-        engrams: Vec<Engram>,
+        memories: Vec<Memory>,
     ) -> Box<dyn RecordBatchReader + Send> {
         let schema = arrow_schema();
 
-        let ids: Vec<String> = engrams.iter().map(|e| e.id.to_string()).collect();
-        let contents: Vec<String> = engrams.iter().map(|e| e.content.clone()).collect();
-        let scopes: Vec<String> = engrams.iter().map(|e| e.scope.to_string()).collect();
-        let categories: Vec<String> = engrams.iter().map(|e| e.category.to_string()).collect();
-        let entities: Vec<Option<String>> = engrams.iter().map(|e| e.entity.clone()).collect();
+        let ids: Vec<String> = memories.iter().map(|e| e.id.to_string()).collect();
+        let contents: Vec<String> = memories.iter().map(|e| e.content.clone()).collect();
+        let scopes: Vec<String> = memories.iter().map(|e| e.scope.to_string()).collect();
+        let categories: Vec<String> = memories.iter().map(|e| e.category.to_string()).collect();
+        let entities: Vec<Option<String>> = memories.iter().map(|e| e.entity.clone()).collect();
         let source_projects: Vec<Option<String>> =
-            engrams.iter().map(|e| e.source_project.clone()).collect();
+            memories.iter().map(|e| e.source_project.clone()).collect();
         let source_sessions: Vec<String> =
-            engrams.iter().map(|e| e.source_session.clone()).collect();
+            memories.iter().map(|e| e.source_session.clone()).collect();
         let source_timestamps: Vec<i64> =
-            engrams.iter().map(|e| dt_to_micros(&e.source_timestamp)).collect();
-        let lifecycles: Vec<String> = engrams.iter().map(|e| e.lifecycle.to_string()).collect();
-        let confidences: Vec<f32> = engrams.iter().map(|e| e.confidence).collect();
-        let created_ats: Vec<i64> = engrams.iter().map(|e| dt_to_micros(&e.created_at)).collect();
-        let updated_ats: Vec<i64> = engrams.iter().map(|e| dt_to_micros(&e.updated_at)).collect();
+            memories.iter().map(|e| dt_to_micros(&e.source_timestamp)).collect();
+        let lifecycles: Vec<String> = memories.iter().map(|e| e.lifecycle.to_string()).collect();
+        let confidences: Vec<f32> = memories.iter().map(|e| e.confidence).collect();
+        let created_ats: Vec<i64> = memories.iter().map(|e| dt_to_micros(&e.created_at)).collect();
+        let updated_ats: Vec<i64> = memories.iter().map(|e| dt_to_micros(&e.updated_at)).collect();
         let accessed_ats: Vec<Option<i64>> =
-            engrams.iter().map(|e| opt_dt_to_micros(&e.accessed_at)).collect();
+            memories.iter().map(|e| opt_dt_to_micros(&e.accessed_at)).collect();
         let supersedes_vec: Vec<Option<String>> =
-            engrams.iter().map(|e| opt_uuid_to_string(&e.supersedes)).collect();
+            memories.iter().map(|e| opt_uuid_to_string(&e.supersedes)).collect();
         let superseded_by_vec: Vec<Option<String>> =
-            engrams.iter().map(|e| opt_uuid_to_string(&e.superseded_by)).collect();
+            memories.iter().map(|e| opt_uuid_to_string(&e.superseded_by)).collect();
 
-        let n = engrams.len();
+        let n = memories.len();
 
         // Build embedding FixedSizeList
-        let all_embeddings: Vec<f32> = engrams.iter().flat_map(|e| e.embedding.iter().copied()).collect();
+        let all_embeddings: Vec<f32> = memories.iter().flat_map(|e| e.embedding.iter().copied()).collect();
         assert_eq!(
             all_embeddings.len(),
             n * EMBEDDING_DIM as usize,
-            "embedding total floats mismatch: got {} for {} engrams (each should have {} dims)",
+            "embedding total floats mismatch: got {} for {} memories (each should have {} dims)",
             all_embeddings.len(), n, EMBEDDING_DIM
         );
         let values = Arc::new(Float32Array::from(all_embeddings)) as ArrayRef;
@@ -265,7 +265,7 @@ impl Engram {
         Box::new(arrow_array::RecordBatchIterator::new(batches.into_iter(), schema))
     }
 
-    /// Create a placeholder engram with zero embeddings (for Phase 1 testing).
+    /// Create a placeholder memory with zero embeddings (for Phase 1 testing).
     pub fn new_placeholder(
         content: String,
         scope: Scope,

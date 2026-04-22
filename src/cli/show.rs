@@ -1,21 +1,21 @@
 use anyhow::{Result, bail};
 
-use crate::storage::db::EngramDb;
-use crate::storage::models::Engram;
+use crate::storage::db::MemoryDb;
+use crate::storage::models::Memory;
 
-pub async fn run(db: &EngramDb, id_prefix: &str) -> Result<()> {
-    let engram = find_by_prefix(db, id_prefix).await?;
-    print_detail(&engram);
+pub async fn run(db: &MemoryDb, id_prefix: &str) -> Result<()> {
+    let memory = find_by_prefix(db, id_prefix).await?;
+    print_detail(&memory);
     Ok(())
 }
 
-pub async fn find_by_prefix(db: &EngramDb, prefix: &str) -> Result<Engram> {
+pub async fn find_by_prefix(db: &MemoryDb, prefix: &str) -> Result<Memory> {
     // Try exact UUID parse first
     if let Ok(uuid) = prefix.parse() {
         if let Some(e) = db.get_by_id(&uuid).await? {
             return Ok(e);
         }
-        bail!("engram not found: {prefix}");
+        bail!("memory not found: {prefix}");
     }
 
     // Prefix match: list all and filter
@@ -32,13 +32,13 @@ pub async fn find_by_prefix(db: &EngramDb, prefix: &str) -> Result<Engram> {
         .collect();
 
     match matches.len() {
-        0 => bail!("no engram found matching prefix: {prefix}"),
+        0 => bail!("no memory found matching prefix: {prefix}"),
         1 => Ok(matches.into_iter().next().unwrap()),
-        n => bail!("ambiguous prefix '{prefix}': matches {n} engrams"),
+        n => bail!("ambiguous prefix '{prefix}': matches {n} memories"),
     }
 }
 
-fn print_detail(e: &Engram) {
+fn print_detail(e: &Memory) {
     println!("ID:               {}", e.id);
     println!("Content:          {}", e.content);
     println!("Scope:            {}", e.scope);

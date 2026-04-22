@@ -6,14 +6,14 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::config::Config;
-use crate::storage::db::EngramDb;
-use crate::storage::models::{Category, Engram, Lifecycle, Scope};
+use crate::storage::db::MemoryDb;
+use crate::storage::models::{Category, Memory, Lifecycle, Scope};
 
 use super::curate::{strip_thinking_block, truncate_str};
 use super::extract::strip_code_fences;
 use super::reconcile::cosine_similarity;
 
-/// Sentinel value for source_session on settled engrams.
+/// Sentinel value for source_session on settled memories.
 const SETTLING_SESSION: &str = "settling";
 
 // ── Synthesis prompts ──
@@ -54,7 +54,7 @@ pub struct SettleReport {
 
 #[derive(Debug)]
 pub struct PromotionCandidate {
-    pub source_engrams: Vec<PromotionSource>,
+    pub source_memories: Vec<PromotionSource>,
     pub distinct_projects: usize,
     /// Set after synthesis (None in dry-run)
     pub synthesized_content: Option<String>,
@@ -71,7 +71,7 @@ pub struct PromotionSource {
 #[derive(Debug)]
 pub struct SynthesisCandidate {
     pub entity: String,
-    pub source_engrams: Vec<SynthesisSource>,
+    pub source_memories: Vec<SynthesisSource>,
     /// Set after synthesis (None in dry-run)
     pub synthesized_content: Option<String>,
     pub new_id: Option<Uuid>,
@@ -157,7 +157,7 @@ impl UnionFind {
 
 /// Run the settling pass: cross-project promotion + entity synthesis.
 pub async fn run_settle(
-    db: &EngramDb,
+    db: &MemoryDb,
     config: &Config,
     dry_run: bool,
     generate_fn: Option<&dyn Fn(&str, &str) -> Result<String>>,
@@ -165,8 +165,8 @@ pub async fn run_settle(
 ) -> Result<SettleReport> {
     let mut report = SettleReport::default();
 
-    // Load all non-superseded engrams
-    let all_engrams = db
+    // Load all non-superseded memories
+    let all_memories = db
         .list(&crate::storage::db::ListFilters {
             exclude_superseded: true,
             limit: Some(100_000),
@@ -174,18 +174,18 @@ pub async fn run_settle(
         })
         .await?;
 
-    tracing::info!("Settling: loaded {} active engrams", all_engrams.len());
+    tracing::info!("Settling: loaded {} active memories", all_memories.len());
 
     // ── Phase 1: Cross-project promotion ──
-    let project_engrams: Vec<&Engram> = all_engrams.iter()
+    let project_memories: Vec<&Memory> = all_memories.iter()
         .filter(|e| e.scope == Scope::Project)
         .collect();
 
-    tracing::info!("Settling: {} project-scoped engrams for clustering", project_engrams.len());
+    tracing::info!("Settling: {} project-scoped memories for clustering", project_memories.len());
 
-    if project_engrams.len() >= 2 {
+    if project_memories.len() >= 2 {
         let clusters = cluster_by_similarity(
-            &project_engrams,
+            &project_memories,
             config.settle.cluster_cosine_threshold,
             config.settle.max_cluster_size,
         );
@@ -193,16 +193,16 @@ pub async fn run_settle(
         for cluster_indices in &clusters {
             // Count distinct source projects
             let projects: HashSet<&str> = cluster_indices.iter()
-                .filter_map(|&i| project_engrams[i].source_project.as_deref())
+                .filter_map(|&i| project_memories[i].source_project.as_deref())
                 .collect();
 
             if projects.len() < config.settle.min_projects_for_promotion {
                 continue;
             }
 
-            // Idempotency: skip if any member is already superseded by a settling engram
+            // Idempotency: skip if any member is already superseded by a settling memory
             let any_already_settled = cluster_indices.iter().any(|&i| {
-                project_engrams[i].superseded_by.is_some()
+                project_memories[i].superseded_by.is_some()
             });
             if any_already_settled {
                 report.skipped_already_settled += 1;
@@ -210,7 +210,7 @@ pub async fn run_settle(
             }
 
             let sources: Vec<PromotionSource> = cluster_indices.iter().map(|&i| {
-                let e = project_engrams[i];
+                let e = project_memories[i];
                 PromotionSource {
                     id: e.id,
                     content: e.content.clone(),
@@ -220,7 +220,7 @@ pub async fn run_settle(
 
             report.promotions.push(PromotionCandidate {
                 distinct_projects: projects.len(),
-                source_engrams: sources,
+                source_memories: sources,
                 synthesized_content: None,
                 new_id: None,
             });
@@ -228,24 +228,24 @@ pub async fn run_settle(
     }
 
     // ── Phase 2: Entity grouping ──
-    // Reload to account for any engrams that might overlap with promotions
-    let active_engrams: Vec<&Engram> = all_engrams.iter()
+    // Reload to account for any memories that might overlap with promotions
+    let active_memories: Vec<&Memory> = all_memories.iter()
         .filter(|e| e.superseded_by.is_none())
         .collect();
 
-    let mut entity_groups: HashMap<&str, Vec<&Engram>> = HashMap::new();
-    for e in &active_engrams {
+    let mut entity_groups: HashMap<&str, Vec<&Memory>> = HashMap::new();
+    for e in &active_memories {
         if let Some(ref entity) = e.entity {
             entity_groups.entry(entity.as_str()).or_default().push(e);
         }
     }
 
     let promotion_ids: HashSet<Uuid> = report.promotions.iter()
-        .flat_map(|p| p.source_engrams.iter().map(|s| s.id))
+        .flat_map(|p| p.source_memories.iter().map(|s| s.id))
         .collect();
 
     for (entity, group) in &entity_groups {
-        if group.len() < config.settle.min_engrams_for_synthesis {
+        if group.len() < config.settle.min_memories_for_synthesis {
             continue;
         }
 
@@ -254,13 +254,13 @@ pub async fn run_settle(
         // These need reclassification first (future settling step).
         if group.len() > config.settle.max_cluster_size {
             tracing::info!(
-                "Settling: skipping entity '{}' ({} engrams, exceeds max {})",
+                "Settling: skipping entity '{}' ({} memories, exceeds max {})",
                 entity, group.len(), config.settle.max_cluster_size,
             );
             continue;
         }
 
-        // Skip single-session entities — if all engrams come from one session,
+        // Skip single-session entities — if all memories come from one session,
         // it's session-specific detail, not a pattern worth synthesizing.
         let distinct_sessions: HashSet<&str> = group.iter()
             .map(|e| e.source_session.as_str())
@@ -280,10 +280,10 @@ pub async fn run_settle(
 
         // Don't synthesize entities that are entirely part of a promotion cluster
         // (they'll be handled by promotion)
-        let non_promoted: Vec<&&Engram> = group.iter()
+        let non_promoted: Vec<&&Memory> = group.iter()
             .filter(|e| !promotion_ids.contains(&e.id))
             .collect();
-        if non_promoted.len() < config.settle.min_engrams_for_synthesis {
+        if non_promoted.len() < config.settle.min_memories_for_synthesis {
             continue;
         }
 
@@ -297,7 +297,7 @@ pub async fn run_settle(
 
         report.syntheses.push(SynthesisCandidate {
             entity: entity.to_string(),
-            source_engrams: sources,
+            source_memories: sources,
             synthesized_content: None,
             new_id: None,
         });
@@ -314,7 +314,7 @@ pub async fn run_settle(
 
     // Cross-project promotions
     for promotion in &mut report.promotions {
-        let items: Vec<String> = promotion.source_engrams.iter()
+        let items: Vec<String> = promotion.source_memories.iter()
             .map(|s| format!("- [project: {}] {}", s.source_project, s.content))
             .collect();
         let user_prompt = format!(
@@ -343,7 +343,7 @@ pub async fn run_settle(
 
     // Entity syntheses
     for synthesis in &mut report.syntheses {
-        let items: Vec<String> = synthesis.source_engrams.iter()
+        let items: Vec<String> = synthesis.source_memories.iter()
             .map(|s| format!("- (conf={:.2}) {}", s.confidence, s.content))
             .collect();
         let user_prompt = format!(
@@ -384,14 +384,14 @@ pub async fn run_settle(
         let embedding = embed(content)?;
         let new_id = Uuid::new_v4();
 
-        let engram = Engram {
+        let memory = Memory {
             id: new_id,
             content: content.clone(),
             embedding,
             scope: Scope::Personal,
             category: most_common_category_from_projects(
-                &promotion.source_engrams.iter().map(|s| s.id).collect::<Vec<_>>(),
-                &all_engrams,
+                &promotion.source_memories.iter().map(|s| s.id).collect::<Vec<_>>(),
+                &all_memories,
             ),
             entity: None, // personal traits don't need entity grouping
             source_project: None,
@@ -402,13 +402,13 @@ pub async fn run_settle(
             created_at: now,
             updated_at: now,
             accessed_at: None,
-            supersedes: Some(promotion.source_engrams[0].id),
+            supersedes: Some(promotion.source_memories[0].id),
             superseded_by: None,
         };
 
-        db.insert(vec![engram]).await?;
+        db.insert(vec![memory]).await?;
 
-        for source in &promotion.source_engrams {
+        for source in &promotion.source_memories {
             let _ = db.mark_superseded(&source.id, &new_id).await;
         }
 
@@ -431,11 +431,11 @@ pub async fn run_settle(
         let embedding = embed(content)?;
         let new_id = Uuid::new_v4();
 
-        // Inherit scope and category from the majority of source engrams
-        let source_ids: Vec<Uuid> = synthesis.source_engrams.iter().map(|s| s.id).collect();
-        let (scope, category) = most_common_scope_and_category(&source_ids, &all_engrams);
+        // Inherit scope and category from the majority of source memories
+        let source_ids: Vec<Uuid> = synthesis.source_memories.iter().map(|s| s.id).collect();
+        let (scope, category) = most_common_scope_and_category(&source_ids, &all_memories);
 
-        let engram = Engram {
+        let memory = Memory {
             id: new_id,
             content: content.clone(),
             embedding,
@@ -446,29 +446,29 @@ pub async fn run_settle(
             source_session: SETTLING_SESSION.to_string(),
             source_timestamp: now,
             lifecycle: Lifecycle::Candidate,
-            confidence: synthesis.source_engrams.iter()
+            confidence: synthesis.source_memories.iter()
                 .map(|s| s.confidence)
                 .fold(0.0f32, f32::max), // inherit highest confidence
             created_at: now,
             updated_at: now,
             accessed_at: None,
-            supersedes: Some(synthesis.source_engrams[0].id),
+            supersedes: Some(synthesis.source_memories[0].id),
             superseded_by: None,
         };
 
-        db.insert(vec![engram]).await?;
+        db.insert(vec![memory]).await?;
 
-        for source in &synthesis.source_engrams {
+        for source in &synthesis.source_memories {
             let _ = db.mark_superseded(&source.id, &new_id).await;
         }
 
         synthesis.new_id = Some(new_id);
         tracing::info!(
-            "Synthesized entity '{}' ({}): {} (from {} engrams)",
+            "Synthesized entity '{}' ({}): {} (from {} memories)",
             synthesis.entity,
             &new_id.to_string()[..8],
             truncate_str(content, 60),
-            synthesis.source_engrams.len(),
+            synthesis.source_memories.len(),
         );
     }
 
@@ -478,16 +478,16 @@ pub async fn run_settle(
 // ── Helpers ──
 
 fn cluster_by_similarity(
-    engrams: &[&Engram],
+    memories: &[&Memory],
     threshold: f32,
     max_size: usize,
 ) -> Vec<Vec<usize>> {
-    let n = engrams.len();
+    let n = memories.len();
     let mut uf = UnionFind::new(n);
 
     for i in 0..n {
         for j in (i + 1)..n {
-            let sim = cosine_similarity(&engrams[i].embedding, &engrams[j].embedding);
+            let sim = cosine_similarity(&memories[i].embedding, &memories[j].embedding);
             if sim >= threshold {
                 uf.union(i, j);
             }
@@ -524,7 +524,7 @@ fn parse_synthesis_response<T: serde::de::DeserializeOwned>(response: &str) -> O
     None
 }
 
-fn most_common_category_from_projects(ids: &[Uuid], all: &[Engram]) -> Category {
+fn most_common_category_from_projects(ids: &[Uuid], all: &[Memory]) -> Category {
     let mut counts: HashMap<&Category, usize> = HashMap::new();
     for e in all {
         if ids.contains(&e.id) {
@@ -537,7 +537,7 @@ fn most_common_category_from_projects(ids: &[Uuid], all: &[Engram]) -> Category 
         .unwrap_or(Category::Pattern)
 }
 
-fn most_common_scope_and_category(ids: &[Uuid], all: &[Engram]) -> (Scope, Category) {
+fn most_common_scope_and_category(ids: &[Uuid], all: &[Memory]) -> (Scope, Category) {
     let mut scope_counts: HashMap<Scope, usize> = HashMap::new();
     let mut cat_counts: HashMap<&Category, usize> = HashMap::new();
     for e in all {

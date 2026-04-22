@@ -1,11 +1,11 @@
 use anyhow::Result;
 
-use crate::storage::db::EngramDb;
+use crate::storage::db::MemoryDb;
 
-pub async fn run(db: &EngramDb) -> Result<()> {
+pub async fn run(db: &MemoryDb) -> Result<()> {
     let stats = db.count().await?;
 
-    println!("Engram Statistics");
+    println!("Memory Statistics");
     println!("─────────────────");
     println!("Total:      {}", stats.total);
     println!("Personal:   {}", stats.personal);

@@ -208,7 +208,7 @@ this structure is essential for the preprocessing pipeline.
 ```
 ~/.claude/
 ├── projects/
-│   ├── -home-carlose-projects-kenna/          # One dir per project
+│   ├── -home-you-projects-kenna/              # One dir per project
 │   │   ├── 08da7c6a-db97-...jsonl              # Main session files (UUID)
 │   │   ├── agent-a1f5617a...jsonl              # Agent-spawned sessions
 │   │   ├── 08da7c6a-.../                       # Per-session subdirectory
@@ -218,14 +218,14 @@ this structure is essential for the preprocessing pipeline.
 │   │   │       ├── agent-aprompt_suggestion-*.jsonl  # Prompt suggestions (system)
 │   │   │       └── agent-*.jsonl                # Tool subagents (system)
 │   │   └── ...
-│   └── -home-carlose-projects-ralph-trader/
+│   └── -home-you-projects-another-project/
 │       └── ...
 ├── history.jsonl                               # Prompt history (all sessions)
 └── settings.json
 ```
 
 **Directory naming**: Project paths are encoded by replacing `/` with `-`.
-Example: `/home/carlose/projects/kenna` → `-home-carlose-projects-kenna`.
+Example: `/home/you/projects/kenna` → `-home-you-projects-kenna`.
 This encoding is lossy — hyphens in directory names are indistinguishable
 from path separators. Exclusion matching works on the encoded form.
 
@@ -498,7 +498,7 @@ Configured in `config.toml`:
 ```toml
 [reconcile]
 exclude_projects = [
-    "/home/carlose/projects/ralph-trader",
+    "/home/you/projects/something-noisy",
 ]
 ```
 
@@ -787,10 +787,11 @@ cp ~/.local/share/kenna/state/cursor.json /tmp/cursor.bak
 
 # 2. delete the entry (filename format: <project-dir>/<uuid>.jsonl)
 python3 -c "
-import json; p='/home/carlose/.local/share/kenna/state/cursor.json'
-with open(p) as f: c=json.load(f)
-c['processed'].pop('-home-carlose-projects-FOO/<uuid>.jsonl')
-with open(p,'w') as f: json.dump(c,f,indent=2)"
+import json, pathlib
+p = pathlib.Path.home() / '.local/share/kenna/state/cursor.json'
+c = json.loads(p.read_text())
+c['processed'].pop('-home-you-projects-FOO/<uuid>.jsonl')
+p.write_text(json.dumps(c, indent=2))"
 
 # 3. run the test
 cargo run -- reconcile --session <uuid-prefix> [--model <gguf>]

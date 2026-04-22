@@ -10,7 +10,7 @@ pub struct SessionFile {
     /// Path to the JSONL file.
     pub path: PathBuf,
     /// The project directory name as Claude Code encodes it.
-    /// e.g. "-home-carlose-projects-kenna"
+    /// e.g. "-home-you-projects-foo"
     pub project_dir_name: String,
     /// Session ID extracted from filename.
     pub session_id: String,
@@ -151,7 +151,7 @@ fn discover_aside_subagents(
 }
 
 /// Encode a project path to the directory name format Claude Code uses.
-/// "/home/carlose/projects/ralph-trader" → "-home-carlose-projects-ralph-trader"
+/// "/home/alice/projects/foo" → "-home-alice-projects-foo"
 fn encode_project_path(path: &str) -> String {
     path.replace('/', "-")
 }
@@ -222,18 +222,18 @@ mod tests {
     #[test]
     fn test_encode_project_path() {
         assert_eq!(
-            encode_project_path("/home/carlose/projects/ralph-trader"),
-            "-home-carlose-projects-ralph-trader"
+            encode_project_path("/home/alice/projects/foo"),
+            "-home-alice-projects-foo"
         );
     }
 
     #[test]
     fn test_is_excluded() {
-        let exclusions = vec!["-home-carlose-projects-ralph-trader".to_string()];
+        let exclusions = vec!["-home-alice-projects-foo".to_string()];
         assert!(is_excluded(
-            "-home-carlose-projects-ralph-trader",
+            "-home-alice-projects-foo",
             &exclusions
         ));
-        assert!(!is_excluded("-home-carlose-projects-kenna", &exclusions));
+        assert!(!is_excluded("-home-alice-projects-bar", &exclusions));
     }
 }

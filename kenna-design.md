@@ -125,7 +125,7 @@ enum Lifecycle {
 
 Models are loaded sequentially to manage GPU memory (only one on GPU at a time):
 
-### Phase 1: Extract (Gemma 3 4B IT on GPU)
+### Phase 1: Extract (Gemma 4 E4B IT on GPU)
 
 Processes preprocessed conversation chunks via **multi-turn few-shot chat**.
 Produces candidate memories as JSON arrays.
@@ -180,7 +180,7 @@ Qwen3 is a thinking model — the `<think>` block is stripped before JSON parsin
 source text, not a truncated session prefix. This ensures the curation model always
 sees the text that produced the candidates.
 
-### Phase 3: Embed + Reconcile (nomic-embed-text on CPU)
+### Phase 3: Embed + Reconcile (nomic-embed-text on GPU)
 
 Embeds candidates and reconciles against the existing store:
 
@@ -385,7 +385,7 @@ kenna settle [--dry-run]
   │
   ├─ Phase 3: Synthesis (Qwen3 8B on GPU, 4096 max tokens)
   │
-  ├─ Phase 4: Embedding (nomic-embed on CPU, same backend instance)
+  ├─ Phase 4: Embedding (nomic-embed on GPU, same backend instance)
   │
   └─ Phase 5: Persist + supersede source memories
 ```
@@ -512,9 +512,9 @@ Applied early in the pipeline during session discovery, before any JSONL is read
 ~/.local/share/kenna/
 ├── db/                     # LanceDB data directory (Arrow-backed)
 ├── models/
-│   ├── gemma-3-4b-it-Q6_K.gguf      # Extraction model (~3.2GB, GPU)
-│   ├── qwen3-8b-q4_k_m.gguf         # Curation model (~5GB, GPU)
-│   └── nomic-embed-text-v1.5.Q8_0.gguf  # Embedding model (~138MB, CPU)
+│   ├── google_gemma-4-E4B-it-Q6_K.gguf  # Extraction model (~3.5GB, GPU)
+│   ├── qwen3-8b-q4_k_m.gguf             # Curation model (~5GB, GPU)
+│   └── nomic-embed-text-v1.5.Q8_0.gguf  # Embedding model (~138MB, GPU)
 ├── state/
 │   └── cursor.json         # Tracks last-processed mtime per session file
 ├── debug/
@@ -608,8 +608,10 @@ Design History below.
 ### BERT embedding: Vulkan segfaults, ROCm works (resolved)
 
 The safe `llama-cpp-2` wrappers (`embeddings_seq_ith`) segfault on BERT-type models
-when using the Vulkan backend. Switching to ROCm fixed this. The safe API now works
-for both generation and embedding.
+when using the Vulkan backend. The project is now 100% ROCm (the `llama-cpp-2`
+crate feature is `rocm`, not `vulkan`) and the safe API works for both generation
+and embedding. Embedding runs on GPU like the generation models — the
+Vulkan-era `with_n_gpu_layers(0)` workaround was removed.
 
 ### GBNF grammar sampling — investigated and ruled out
 
@@ -685,37 +687,47 @@ time. That matches our `str_to_token(prompt, AddBos::Always)` in
 `generate_with_grammar()`. Uniform behavior across Gemma 3 (whose template
 has no `{{bos_token}}`) and Gemma 4 (whose template does).
 
-### Gemma 4 extraction — works but JSON output is flakier than Gemma 3
+### Gemma 4 E4B is the extraction model; how we got there
 
-As of 2026-04-22 (after the oaicompat migration above), Gemma 4 E4B loads,
-applies its chat template, and extracts end-to-end. Apples-to-apples test
-on session `e12417b5` (8 chunks) comparing the same Q6_K precision:
+Gemma 4 E4B Q6_K (bartowski imatrix build,
+`bartowski/google_gemma-4-E4B-it-Q6_K.gguf`) is the default extraction
+model. Getting there required two rounds of work:
+
+1. **Chat template path** — the C API `llama_chat_apply_template` returned
+   `LLM_CHAT_TEMPLATE_UNKNOWN` for Gemma 4's `<|turn>` tokens (see "Chat
+   template: use oaicompat + use_jinja" above). Migrating the whole chat
+   pipeline to `apply_chat_template_oaicompat` + `use_jinja: true` unblocked
+   Gemma 4 (and all future templates).
+2. **JSON output discipline** — early Gemma 4 runs had parse failures
+   Gemma 3 didn't produce: unescaped literal double quotes inside content
+   strings (`"...complex, "real" long-term..."`) and occasional missing
+   `confidence` / `scope_confidence` fields. Fixed with prompt-level
+   discipline (single-quote rule in the extraction prompt) plus serde
+   defaults for the confidence fields. No parser-level repair was needed.
+
+Apples-to-apples comparison on session `e12417b5` (8 chunks), Q6_K each,
+**before** the prompt fixes:
 
 | Model | Extracted | Parse fails | Curation kept | Accepted |
 |---|---|---|---|---|
 | Gemma 3 4B Q6_K | 15 | 0/8 | 53% | 7 |
-| Gemma 4 E4B Q6_K (bartowski imatrix) | 10 | 2/8 | 80% | 7 |
+| Gemma 4 E4B Q6_K | 10 | 2/8 | 80% | 7 |
 
-Gemma 4 is more selective — fewer candidates, higher quality per candidate —
-but **loses whole chunks to JSON output errors that Gemma 3 doesn't produce**:
-- Unescaped literal double quotes inside content strings (`"...complex, "real" long-term..."`)
-- Occasional missing `confidence` / `scope_confidence` fields
-
-Neither is a quantization artifact (tested Q4_K_M → Q6_K, same failures).
-Both are Gemma 4 behavioral differences. Options if we want to lean on G4:
-1. Prompt tuning — add explicit "escape all interior double quotes" rule
-2. Make schema permissive — default confidences when missing
-3. Post-process repair — detect unescaped quotes in content values and escape them
-
-Not acted on yet; Gemma 3 4B remains the default extraction model.
+After the prompt fixes, Gemma 4 dropped to 0/8 parse fails on the same
+session. Same final accepted count as Gemma 3 despite extracting fewer
+candidates — Gemma 4 is more selective per candidate, and Qwen3's curation
+discards a smaller fraction (80% kept vs 53%). No formal multi-session
+eval has been run; the switch to Gemma 4 as default is a judgment call
+based on this one A/B plus qualitative read of outputs.
 
 **On the 26B-A4B settling model:** untested with the new API path. The 26B
 at Q4_K_M is ~17 GB — borderline on 20 GB VRAM alongside overhead. That's
 a separate investigation.
 
-**On GGUF choice for E4B**: we use `bartowski/google_gemma-4-E4B-it-Q6_K.gguf`
-(imatrix-calibrated). At Q6 and above, imatrix gives only a small edge vs
-ggml-org's uniform quants; below Q4 the gap matters more.
+**On GGUF choice for E4B**: at Q6 and above, imatrix gives only a small
+edge vs ggml-org's uniform quants; below Q4 the gap matters more. We use
+the imatrix build because it was the same file size as the uniform one —
+no downside.
 
 ### Extraction model selection
 
@@ -724,17 +736,21 @@ They generate chain-of-thought before JSON, wasting tokens and causing parse fai
 Qwen3 IS used for curation, where thinking is an asset — the `<think>` block is
 stripped before JSON parsing in `curate.rs::strip_thinking_block()`.
 
-**Gemma 3 recommended sampling**: temp=1.0, top_k=64, top_p=0.95 (per Google).
-Lower temperatures distort the model's calibration and cause worse output.
+**Sampling params**: temp=1.0, top_k=64, top_p=0.95 (per Google's model
+cards — same values for Gemma 3 and Gemma 4). Lower temperatures distort
+the model's calibration and cause worse output. **Re-check when swapping
+model families** — mis-set temperature is exactly the kind of thing that
+silently degrades quality.
 
 To compare extraction models: `kenna reconcile --limit 1 --model <filename.gguf>`
 
 ### Extraction hallucination
 
-Gemma 3 4B will hallucinate plausible-sounding facts from its training prior
-(e.g., "Uses macOS" for a developer). Mitigations:
+The extraction model will hallucinate plausible-sounding facts from its
+training prior (e.g., "Uses macOS" for a developer) — observed on Gemma 3
+originally, and Gemma 4 is not immune either. Mitigations:
 - "You know nothing about this user" framing and anti-inference rules in extraction prompt
-- Multi-turn few-shot examples in assistant turns (NOT system prompt — any concrete noun in the system prompt becomes a hallucination seed that Gemma parrots into every session)
+- Multi-turn few-shot examples in assistant turns (NOT system prompt — any concrete noun in the system prompt becomes a hallucination seed that the model parrots into every session)
 - Qwen3 curation verifies claims against source text with explicit "absence of contradiction is not evidence of support" rule
 - Curation reasons field enables debugging which hallucinations slip through
 
@@ -757,7 +773,6 @@ faster prompt prefill (long prompts relative to short outputs).
 **Future investigation if speed becomes a concern:**
 - Flash attention on ROCm/RDNA3 (`GGML_HIP_ROCWMMA_FATTN=ON`) — may help at
   longer contexts but has been hit-or-miss on consumer RDNA3 cards
-- CPU thread count for nomic-embed — should match physical cores (6 on Ryzen)
 - Quantization tradeoffs — Gemma Q8_0 for better extraction quality (fits in VRAM),
   Qwen Q4_K_S for faster curation if quality is sufficient
 
@@ -817,8 +832,9 @@ Resolved questions and decisions that changed during implementation.
 ### Extraction model selection (resolved)
 Tested Qwen3, DeepSeek-R1, and other thinking models for extraction. They
 generate chain-of-thought before JSON, wasting tokens and causing parse failures.
-Gemma 3 4B IT is the extraction model. Qwen3 8B is used for curation, where
-thinking is an asset.
+Gemma 3 4B IT was the initial extraction model; Gemma 4 E4B is the current
+default (see the Gemma 4 note in Known Issues for the migration details).
+Qwen3 8B is used for curation, where thinking is an asset.
 
 ### Few-shot example placement (resolved, critical lesson)
 Initially placed examples in the extraction system prompt. Gemma 4B treated
@@ -829,9 +845,12 @@ fictional examples contaminate output. Solution: few-shot examples go in
 assistant turns in the chat history, not in the system prompt.
 
 ### Embedding backend (resolved)
-Vulkan segfaults on BERT-type models with llama-cpp-2's safe API. ROCm works.
-Embedding runs on CPU anyway (nomic-embed is small), so this is moot for
-production but matters if GPU embedding is ever needed.
+Vulkan segfaulted on BERT-type models via llama-cpp-2's safe API.
+The project moved to ROCm-only, which fixed it. Embedding is now on GPU
+alongside the generation models. The earlier CPU fallback
+(`with_n_gpu_layers(0)` for the embedding model) was a Vulkan-era workaround;
+it stayed in the code long after the switch to ROCm until a later audit
+caught the inconsistency.
 
 ### Token estimation (resolved)
 `words * 1.3` severely undercounts for non-prose content (paths, UUIDs, logs).

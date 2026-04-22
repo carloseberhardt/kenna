@@ -88,10 +88,9 @@ impl LlamaBackend {
 
         let embedding_model = if let Some(path) = &config.embedding_model_path {
             tracing::info!("Loading embedding model: {path}");
-            // Use CPU for embedding model — BERT models have issues with Vulkan in this version
-            let cpu_params = LlamaModelParams::default().with_n_gpu_layers(0);
+            let embed_params = LlamaModelParams::default().with_n_gpu_layers(config.n_gpu_layers);
             Some(
-                LlamaModel::load_from_file(&init, Path::new(path), &cpu_params)
+                LlamaModel::load_from_file(&init, Path::new(path), &embed_params)
                     .map_err(|e| anyhow::anyhow!("failed to load embedding model: {e}"))?,
             )
         } else {
@@ -255,7 +254,15 @@ impl LlamaBackend {
             pos = end;
         }
 
-        // Gemma 3 recommended: temp=1.0, top_k=64, top_p=0.95
+        // Sampler params per the current extraction model's published model
+        // card (temp=1.0, top_k=64, top_p=0.95 — happens to be the same for
+        // Gemma 3 and Gemma 4). RE-VERIFY when swapping model families:
+        // mis-set temperature is exactly the kind of thing that produced
+        // bad output last time we looked. Long-term TODO: move to config.
+        //
+        // Sources:
+        // - https://ai.google.dev/gemma/docs/core/model_card_3
+        // - https://ai.google.dev/gemma/docs/core/model_card_4
         let mut sampler = llama_cpp_2::sampling::LlamaSampler::chain_simple([
             llama_cpp_2::sampling::LlamaSampler::top_k(64),
             llama_cpp_2::sampling::LlamaSampler::top_p(0.95, 1),
@@ -356,7 +363,15 @@ impl InferenceBackend for LlamaBackend {
             pos = end;
         }
 
-        // Gemma 3 recommended: temp=1.0, top_k=64, top_p=0.95
+        // Sampler params per the current extraction model's published model
+        // card (temp=1.0, top_k=64, top_p=0.95 — happens to be the same for
+        // Gemma 3 and Gemma 4). RE-VERIFY when swapping model families:
+        // mis-set temperature is exactly the kind of thing that produced
+        // bad output last time we looked. Long-term TODO: move to config.
+        //
+        // Sources:
+        // - https://ai.google.dev/gemma/docs/core/model_card_3
+        // - https://ai.google.dev/gemma/docs/core/model_card_4
         let mut sampler = llama_cpp_2::sampling::LlamaSampler::chain_simple([
             llama_cpp_2::sampling::LlamaSampler::top_k(64),
             llama_cpp_2::sampling::LlamaSampler::top_p(0.95, 1),

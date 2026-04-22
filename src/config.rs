@@ -56,7 +56,7 @@ impl Default for Config {
             log_level: "warn".into(),
             confidence_drop_threshold: 0.6,
             confidence_auto_accept_threshold: 0.85,
-            extraction_model: "gemma-3-4b-it-Q6_K.gguf".into(),
+            extraction_model: "google_gemma-4-E4B-it-Q6_K.gguf".into(),
             curation_model: "qwen3-8b-q4_k_m.gguf".into(),
             embedding_model: "nomic-embed-text-v1.5.Q8_0.gguf".into(),
             embedding_dimensions: 768,

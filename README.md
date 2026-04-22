@@ -1,13 +1,11 @@
 # Kenna
 
-*Implicit, user-scoped memory for Claude Code.*
+_Implicit, user-scoped memory for Claude Code._
 
 Kenna reads Claude Code's own session transcripts in the background and
-extracts durable knowledge about *you* — preferences, decisions, hardware,
-recurring patterns — then makes it available to future sessions through a
-read-only MCP tool. The goal is continuity: sessions that feel like
-picking up with someone who already knows you, instead of introducing
-yourself every time.
+extracts knowledge — preferences, decisions, hardware, recurring patterns,
+etc. It makes that knowledge available to future sessions through a
+read-only MCP tool. The goal is cross-project continuity.
 
 It is **not** a replacement for Claude Code's built-in project memory
 (`/remember`, `CLAUDE.md`). Those are for explicit, project-scoped notes
@@ -17,7 +15,8 @@ own.
 ## Status
 
 Single-user personal project, alpha. Opinionated about hardware:
-- Linux with an AMD GPU via ROCm (primary target: 7900 XT, 20 GB VRAM)
+
+- Linux with an AMD GPU via ROCm
 - Should work on other ROCm-capable cards with enough VRAM (~10 GB free)
 - CUDA/Metal have not been tested; the `llama-cpp-2` features in
   `Cargo.toml` would need to change
@@ -30,12 +29,12 @@ choices.
 
 Three-phase pipeline, one model on GPU at a time:
 
-1. **Extract** — Gemma 3 4B reads preprocessed conversation chunks and
+1. **Extract** — Gemma 4 E4B reads preprocessed conversation chunks and
    emits candidate memories as JSON
 2. **Curate** — Qwen3 8B verifies each candidate against the source text,
    drops hallucinations, session trivia, and bare choices without
    reasoning
-3. **Embed + reconcile** — nomic-embed-text on CPU; dedup and supersession
+3. **Embed + reconcile** — nomic-embed-text on GPU; dedup and supersession
    via cosine similarity against the existing store
 
 Stored in an embedded LanceDB vector store. Retrieved via the
@@ -49,9 +48,9 @@ synthesizes entity-level summaries from atomic memories.
 
 - Rust (edition 2024)
 - ROCm installed and working (`rocm-smi` on PATH)
-- An AMD GPU with enough free VRAM for Gemma 3 4B or Qwen3 8B (~10 GB)
+- An AMD GPU with enough free VRAM for Gemma 4 E4B or Qwen3 8B (~10 GB)
 - GGUF models — downloaded separately into `~/.local/share/kenna/models/`:
-  - `gemma-3-4b-it-Q6_K.gguf` (~3.2 GB) — extraction
+  - `google_gemma-4-E4B-it-Q6_K.gguf` (~3.5 GB) — extraction
   - `qwen3-8b-q4_k_m.gguf` (~5 GB) — curation
   - `nomic-embed-text-v1.5.Q8_0.gguf` (~138 MB) — embedding
 
@@ -92,6 +91,7 @@ kenna serve                   # MCP server on stdio (for Claude Code)
 ```
 
 Installs and enables two user-level timers:
+
 - `kenna-reconcile.timer` — every 2 hours, processes new sessions
 - `kenna-settle.timer` — daily at 3am, consolidates the store
 

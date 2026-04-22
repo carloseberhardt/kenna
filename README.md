@@ -1,4 +1,4 @@
-# Kenna
+# kenna
 
 _Implicit, user-scoped memory for Claude Code._
 

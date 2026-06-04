@@ -75,8 +75,9 @@ Data dir: `~/.local/share/kenna/` (db, models, state, debug, logs).
 ## Usage
 
 ```sh
-kenna reconcile --dry-run     # preview what would be processed
-kenna reconcile               # full extraction + curation + storage pipeline
+kenna reconcile --dry-run             # read-only preview; depth: chunks (default), extract, curate, reconcile
+kenna reconcile --dry-run=extract     # e.g. run extraction only, print candidates (writes nothing)
+kenna reconcile                       # full extraction + curation + storage pipeline
 kenna settle                  # cross-project promotion + entity synthesis
 kenna list                    # list stored memories
 kenna search "<query>"        # vector search

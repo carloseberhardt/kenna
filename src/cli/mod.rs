@@ -28,9 +28,10 @@ pub struct Cli {
 enum Command {
     /// Run the extraction pipeline on Claude Code session transcripts
     Reconcile {
-        /// Preview what would be processed without running extraction
-        #[arg(long)]
-        dry_run: bool,
+        /// Run read-only to the given depth, writing nothing: chunks (default),
+        /// extract, curate, or reconcile. Omit the flag for a normal run.
+        #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "chunks")]
+        dry_run: Option<reconcile::DryRunStage>,
         /// Maximum number of sessions to process
         #[arg(long)]
         limit: Option<usize>,

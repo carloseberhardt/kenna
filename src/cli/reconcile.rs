@@ -14,6 +14,22 @@ use crate::storage::db::MemoryDb;
 
 use crate::pipeline::extract::ExtractedCandidate;
 
+/// How deep a `--dry-run` runs the pipeline. Declaration order is depth order
+/// (each level is a superset of the one above), so we can gate stages with
+/// `stage >= DryRunStage::Curate`. Every level is read-only: nothing is written
+/// to the DB and the cursor is never advanced.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+pub enum DryRunStage {
+    /// Preprocessing only — show how sessions chunk. No model is loaded.
+    Chunks,
+    /// + Phase A: run extraction and print raw candidates.
+    Extract,
+    /// + Phase B: run curation and print survivors.
+    Curate,
+    /// + Phase C (read-only): print would-be reconcile outcomes against the live store.
+    Reconcile,
+}
+
 /// Candidates extracted from a single conversation chunk, with source text.
 struct ChunkExtraction {
     candidates: Vec<ExtractedCandidate>,
@@ -30,11 +46,20 @@ struct SessionExtraction {
     chunks: Vec<ChunkExtraction>,
 }
 
-pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<String>, session_filter: Option<String>) -> Result<()> {
+pub async fn run(dry: Option<DryRunStage>, limit: Option<usize>, model_override: Option<String>, session_filter: Option<String>) -> Result<()> {
     let mut config = Config::load()?;
     if let Some(model) = model_override {
         config.extraction_model = model;
     }
+
+    // Control axes derived from the dry-run depth:
+    //   commit         — write to the DB and advance the cursor (normal run only)
+    //   run_curate     — run Phase B (curation)
+    //   run_reconcile  — run Phase C (embed + reconcile; read-only when !commit)
+    // A normal run (dry = None) does everything and commits.
+    let commit = dry.is_none();
+    let run_curate = dry.map_or(true, |s| s >= DryRunStage::Curate);
+    let run_reconcile = dry.map_or(true, |s| s >= DryRunStage::Reconcile);
 
     // Discover sessions
     let excluded_count = count_excluded_projects(&config.reconcile.exclude_projects)?;
@@ -53,7 +78,7 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
     // Load cursor for incremental processing
     let mut cursor = Cursor::load()?;
 
-    if dry_run {
+    if dry.is_some() {
         print_discovery_summary(&sessions, excluded_count);
         println!();
     }
@@ -63,8 +88,8 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
         return Ok(());
     }
 
-    if dry_run {
-        // Dry run: just show preprocessing output
+    if matches!(dry, Some(DryRunStage::Chunks)) {
+        // Chunks level: just show preprocessing output, no model load.
         let mut total_chunks = 0usize;
         let mut skipped = 0usize;
         for session in &sessions {
@@ -135,14 +160,17 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
     let mut skipped_sessions = 0usize;
     let mut skipped_cursor = 0usize;
     let mut total_extracted = 0usize;
+    let mut extract_errors = 0usize;
 
     for (session_idx, session) in sessions.iter().enumerate() {
-        if !cursor.needs_processing(&session.path) {
+        // Honor the cursor only on a committing run; dry runs always re-process
+        // from the start so the same session can be previewed repeatedly.
+        if commit && !cursor.needs_processing(&session.path) {
             skipped_cursor += 1;
             continue;
         }
 
-        let byte_offset = cursor.byte_offset(&session.path);
+        let byte_offset = if commit { cursor.byte_offset(&session.path) } else { 0 };
         let chunks = preprocess_session(
             &session.path,
             &session.session_id,
@@ -154,8 +182,10 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
 
         if chunks.is_empty() {
             skipped_sessions += 1;
-            cursor.mark_processed(&session.path);
-            cursor.save()?;
+            if commit {
+                cursor.mark_processed(&session.path);
+                cursor.save()?;
+            }
             continue;
         }
 
@@ -182,6 +212,7 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
             let candidates = match extract_from_chunk(&extract_backend, chunk, 2048) {
                 Ok(c) => c,
                 Err(e) => {
+                    extract_errors += 1;
                     tracing::warn!(
                         "Extraction failed for chunk {} of {}: {e}",
                         chunk.chunk_index,
@@ -207,7 +238,7 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
                 session_path: session.path.clone(),
                 chunks: chunk_extractions,
             });
-        } else {
+        } else if commit {
             cursor.mark_processed(&session.path);
             cursor.save()?;
         }
@@ -227,6 +258,12 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
         total_extracted,
         extractions.len(),
     );
+
+    // Stop here for `--dry-run=extract`: print raw candidates, load no further models.
+    if !run_curate {
+        print_extracted(&extractions, total_extracted, extract_errors);
+        return Ok(());
+    }
 
     // ── Phase B: Curate with Qwen3 ──
     drop(extract_backend); // free GPU memory
@@ -294,6 +331,12 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
         total_curated_dropped,
     );
 
+    // Stop here for `--dry-run=curate`: print survivors, skip the embed model.
+    if !run_reconcile {
+        print_curated(&extractions, total_extracted, total_curated_dropped);
+        return Ok(());
+    }
+
     // ── Phase C: Embed + Reconcile ──
     drop(curate_backend); // free GPU memory
 
@@ -316,10 +359,20 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
             .collect();
 
         if all_candidates.is_empty() {
-            cursor.mark_processed(&extraction.session_path);
-            cursor.save()?;
+            if commit {
+                cursor.mark_processed(&extraction.session_path);
+                cursor.save()?;
+            }
             continue;
         }
+
+        // On a dry run, keep each candidate's text so we can pair it with its
+        // would-be outcome for display (the vec itself is consumed below).
+        let dry_contents: Vec<String> = if commit {
+            Vec::new()
+        } else {
+            all_candidates.iter().map(|c| c.content.clone()).collect()
+        };
 
         let outcomes = reconcile_candidates(
             all_candidates,
@@ -328,8 +381,13 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
             &db,
             &embed_backend,
             &config,
+            commit,
         )
         .await?;
+
+        if !commit {
+            print_reconcile_outcomes(&extraction.session_id, &dry_contents, &outcomes);
+        }
 
         for outcome in &outcomes {
             match outcome {
@@ -359,13 +417,18 @@ pub async fn run(dry_run: bool, limit: Option<usize>, model_override: Option<Str
             }
         }
 
-        cursor.mark_processed(&extraction.session_path);
-        cursor.save()?;
+        if commit {
+            cursor.mark_processed(&extraction.session_path);
+            cursor.save()?;
+        }
     }
 
     println!();
     println!("─────────────────────────");
-    println!("Reconciliation complete:");
+    println!(
+        "{}",
+        if commit { "Reconciliation complete:" } else { "Reconciliation preview (read-only, nothing written):" }
+    );
     println!("  Sessions found:     {total_sessions}");
     if skipped_cursor > 0 {
         println!("  Already processed:  {skipped_cursor}");
@@ -418,4 +481,78 @@ fn print_session_chunks(
         }
         println!();
     }
+}
+
+/// First 8 chars of a session id, for compact headers.
+fn short_id(session_id: &str) -> &str {
+    if session_id.len() > 8 { &session_id[..8] } else { session_id }
+}
+
+/// Print one candidate as an indented, single-line summary.
+fn print_candidate(c: &ExtractedCandidate) {
+    let entity = c.entity.as_deref().unwrap_or("-");
+    println!(
+        "  [{:<10} {:<8} conf {:.2} {}] {}",
+        c.scope,
+        c.category,
+        c.confidence,
+        entity,
+        crate::pipeline::curate::truncate_str(&c.content, 100),
+    );
+}
+
+/// List every session's candidates grouped by session. Shared by the
+/// `--dry-run=extract` (raw) and `--dry-run=curate` (survivors) printers.
+fn print_candidate_listing(extractions: &[SessionExtraction]) {
+    for extraction in extractions {
+        println!(
+            "── {} ({}) ──",
+            short_id(&extraction.session_id),
+            extraction.project_dir_name,
+        );
+        for chunk in &extraction.chunks {
+            for candidate in &chunk.candidates {
+                print_candidate(candidate);
+            }
+        }
+        println!();
+    }
+}
+
+/// `--dry-run=extract`: raw candidates plus extraction-failure count.
+fn print_extracted(extractions: &[SessionExtraction], total_extracted: usize, extract_errors: usize) {
+    print_candidate_listing(extractions);
+    println!("─────────────────────────");
+    println!("Extraction preview (read-only, nothing written):");
+    println!("  Extracted:       {total_extracted}");
+    println!("  Extract errors:  {extract_errors}");
+}
+
+/// `--dry-run=curate`: surviving candidates plus kept/dropped tally.
+fn print_curated(extractions: &[SessionExtraction], total_extracted: usize, dropped: usize) {
+    print_candidate_listing(extractions);
+    println!("─────────────────────────");
+    println!("Curation preview (read-only, nothing written):");
+    println!("  Extracted:    {total_extracted}");
+    println!("  Curated out:  {dropped}");
+    println!("  Kept:         {}", total_extracted - dropped);
+}
+
+/// `--dry-run=reconcile`: pair each candidate with its would-be outcome.
+/// `contents` and `outcomes` are 1:1 and in candidate order.
+fn print_reconcile_outcomes(session_id: &str, contents: &[String], outcomes: &[ReconcileOutcome]) {
+    println!("── {} ──", short_id(session_id));
+    for (content, outcome) in contents.iter().zip(outcomes.iter()) {
+        let label = match outcome {
+            ReconcileOutcome::Accepted(_) => "would accept   ".to_string(),
+            ReconcileOutcome::Candidate(_) => "would candidate".to_string(),
+            ReconcileOutcome::DroppedDuplicate(id) => {
+                format!("duplicate of {}", &id.to_string()[..8])
+            }
+            ReconcileOutcome::DroppedLowConfidence(c) => format!("drop low-conf {c:.2}"),
+            ReconcileOutcome::DroppedInvalid(reason) => format!("drop invalid: {reason}"),
+        };
+        println!("  [{label}] {}", crate::pipeline::curate::truncate_str(content, 90));
+    }
+    println!();
 }

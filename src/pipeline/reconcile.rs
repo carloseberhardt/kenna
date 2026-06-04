@@ -33,6 +33,8 @@ pub enum ReconcileOutcome {
 /// 4. Check for duplicates (cosine > 0.85)
 /// 5. Check for supersession (same entity, different content)
 /// 6. Persist with appropriate lifecycle
+/// When `commit` is false, every decision is computed (embedding, dedup,
+/// supersession, lifecycle) but nothing is persisted — used by `--dry-run`.
 pub async fn reconcile_candidates(
     candidates: Vec<ExtractedCandidate>,
     session_id: &str,
@@ -40,6 +42,7 @@ pub async fn reconcile_candidates(
     db: &MemoryDb,
     backend: &dyn InferenceBackend,
     config: &Config,
+    commit: bool,
 ) -> Result<Vec<ReconcileOutcome>> {
     let mut outcomes = Vec::new();
 
@@ -51,6 +54,7 @@ pub async fn reconcile_candidates(
             db,
             backend,
             config,
+            commit,
         )
         .await?;
         outcomes.push(outcome);
@@ -66,6 +70,7 @@ async fn reconcile_one(
     db: &MemoryDb,
     backend: &dyn InferenceBackend,
     config: &Config,
+    commit: bool,
 ) -> Result<ReconcileOutcome> {
     // 1. Validate scope and category
     let mut scope: Scope = match candidate.scope.parse() {
@@ -189,15 +194,17 @@ async fn reconcile_one(
     };
 
     let id = memory.id;
-    db.insert(vec![memory]).await?;
+    if commit {
+        db.insert(vec![memory]).await?;
 
-    // Mark superseded memories with back-link to the new one
-    for old_id in &supersedes_ids {
-        if let Err(e) = db.mark_superseded(old_id, &id).await {
-            tracing::warn!(
-                "Failed to mark memory {} as superseded: {e}",
-                &old_id.to_string()[..8],
-            );
+        // Mark superseded memories with back-link to the new one
+        for old_id in &supersedes_ids {
+            if let Err(e) = db.mark_superseded(old_id, &id).await {
+                tracing::warn!(
+                    "Failed to mark memory {} as superseded: {e}",
+                    &old_id.to_string()[..8],
+                );
+            }
         }
     }
 

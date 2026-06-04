@@ -742,7 +742,19 @@ the model's calibration and cause worse output. **Re-check when swapping
 model families** — mis-set temperature is exactly the kind of thing that
 silently degrades quality.
 
-To compare extraction models: `kenna reconcile --limit 1 --model <filename.gguf>`
+To compare extraction models, use a read-only dry run so nothing is written to
+the store and the cursor is not advanced (pin a session so both models see the
+same input):
+
+```
+kenna reconcile --dry-run=extract --session <prefix> --model <filename.gguf>
+```
+
+`--dry-run` takes a depth: `chunks` (default — preprocessing preview, no model
+load), `extract` (raw candidates + parse-fail count), `curate` (survivors after
+the Qwen3 pass), or `reconcile` (would-be Accepted/Candidate/Duplicate outcomes
+against the live store). Each level loads only the models it needs and never
+mutates the DB or cursor. Omit the flag for a normal committing run.
 
 ### Extraction hallucination
 

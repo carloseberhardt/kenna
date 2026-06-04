@@ -512,7 +512,7 @@ Applied early in the pipeline during session discovery, before any JSONL is read
 ~/.local/share/kenna/
 ├── db/                     # LanceDB data directory (Arrow-backed)
 ├── models/
-│   ├── google_gemma-4-E4B-it-Q6_K.gguf  # Extraction model (~3.5GB, GPU)
+│   ├── gemma-4-E4B-it-UD-Q6_K_XL.gguf   # Extraction model (~7.5GB, GPU)
 │   ├── qwen3-8b-q4_k_m.gguf             # Curation model (~5GB, GPU)
 │   └── nomic-embed-text-v1.5.Q8_0.gguf  # Embedding model (~138MB, GPU)
 ├── state/
@@ -689,9 +689,9 @@ has no `{{bos_token}}`) and Gemma 4 (whose template does).
 
 ### Gemma 4 E4B is the extraction model; how we got there
 
-Gemma 4 E4B Q6_K (bartowski imatrix build,
-`bartowski/google_gemma-4-E4B-it-Q6_K.gguf`) is the default extraction
-model. Getting there required two rounds of work:
+The Unsloth Dynamic-2.0 E4B build (`gemma-4-E4B-it-UD-Q6_K_XL.gguf`) is the
+default extraction model. Getting Gemma 4 E4B working as the extractor
+required two rounds of work:
 
 1. **Chat template path** — the C API `llama_chat_apply_template` returned
    `LLM_CHAT_TEMPLATE_UNKNOWN` for Gemma 4's `<|turn>` tokens (see "Chat
@@ -727,27 +727,20 @@ a separate investigation.
 **On GGUF choice for E4B**: at Q6 and above, imatrix gives only a small
 edge vs ggml-org's uniform quants; below Q4 the gap matters more.
 
-The configured extraction model is now the **Unsloth Dynamic-2.0 build**
-(`gemma-4-E4B-it-UD-Q6_K_XL.gguf`), chosen over the bartowski imatrix Q6_K
-after a read-only A/B (`--dry-run=extract`) over 4 real interactive sessions
-on 2026-06-04:
+**Why the Dynamic-2.0 quant.** A read-only A/B (`--dry-run=extract`) over 4
+real interactive sessions on 2026-06-04 selected the UD build for its
+selectivity and scope discipline: it keeps project-specific concerns at
+project scope rather than over-promoting them to personal (the expensive
+false-personal error), and it avoids padding extractions with transient task
+state (e.g. "*was benchmarking DMS vs Wayle*"). Its weaker candidates tend to
+arrive with the confidence field omitted (→ serde default 0.50 → dropped at
+the 0.6 threshold), so the drop gate doubles as a precision filter.
 
-- **Bartowski** had higher recall (32 vs 26 candidates) but over-extracted
-  transient task state (e.g. "*was benchmarking DMS vs Wayle*" at conf 0.80)
-  and over-promoted a project-specific concern to **personal** scope — the
-  expensive false-personal error.
-- **UD** was more selective with tighter scope discipline (kept the same
-  concern at project scope). Its weaker extractions tend to arrive with the
-  confidence field omitted (→ serde default 0.50 → dropped at the 0.6
-  threshold), so the drop gate doubles as a precision filter.
-
-The lesson that made this call trustworthy: an earlier A/B that *included* a
-`claude -p` project (`sleeves`) was misleading — junk input inflated UD's
-missing-confidence rate to 53% and would have wrongly rejected it. Always A/B
-on genuine interactive sessions; see also the `exclude_projects` discipline.
-
-Note: the in-code default (`config.rs`) remains the bartowski build as a
-conservative fallback; the UD choice lives in `config.toml`.
+The methodology lesson that made the call trustworthy: an earlier A/B that
+*included* a `claude -p` project (`sleeves`) was misleading — junk input
+inflated the missing-confidence rate to 53% and would have wrongly rejected
+the build. Always A/B on genuine interactive sessions; see also the
+`exclude_projects` discipline.
 
 ### Extraction model selection
 

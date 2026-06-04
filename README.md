@@ -50,7 +50,7 @@ synthesizes entity-level summaries from atomic memories.
 - ROCm installed and working (`rocm-smi` on PATH)
 - An AMD GPU with enough free VRAM for Gemma 4 E4B or Qwen3 8B (~10 GB)
 - GGUF models — downloaded separately into `~/.local/share/kenna/models/`:
-  - `google_gemma-4-E4B-it-Q6_K.gguf` (~3.5 GB) — extraction
+  - `gemma-4-E4B-it-UD-Q6_K_XL.gguf` (~7.5 GB) — extraction
   - `qwen3-8b-q4_k_m.gguf` (~5 GB) — curation
   - `nomic-embed-text-v1.5.Q8_0.gguf` (~138 MB) — embedding
 

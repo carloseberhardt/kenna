@@ -1,6 +1,6 @@
 # kenna — Design Document (v3)
 
-*Last updated: 2026-03-29*
+*Last updated: 2026-06-04*
 
 ## Naming Convention
 
@@ -454,7 +454,7 @@ Only the latest version of each fact is returned.
 ## CLI Commands
 
 ```
-kenna reconcile [--dry-run] [--limit N] [--model file.gguf] [--session ID_PREFIX]
+kenna reconcile [--dry-run[=chunks|extract|curate|reconcile]] [--limit N] [--model file.gguf] [--session ID_PREFIX]
 kenna settle [--dry-run]     # Cross-project promotion + entity synthesis
 kenna serve                  # MCP server on stdio
 kenna list [--pending] [--scope personal|project] [--category X] [--entity X]
@@ -472,24 +472,24 @@ kenna debug-insert "..."     # Test helper with real embeddings
 
 ## Triggering and Scheduling
 
-Kenna's reconciliation pipeline uses systemd's native inotify support
-for zero-polling, zero-resident-process triggering.
+Kenna runs on two user-level systemd timers (installed by
+`systemd/install.sh`). No resident process; each run is a oneshot service
+that loads models, processes, and exits.
 
 ### Architecture
 
 ```
-~/.claude/projects/   ──inotify──▸  kenna-watch.path
-                                         │
-                                    (file changed)
-                                         │
-                                         ▼
-                                  kenna-debounce.timer
-                                    (2-3 min quiet)
-                                         │
-                                         ▼
-                                  kenna-reconcile.service
-                                    (oneshot: kenna reconcile)
+kenna-reconcile.timer   OnBootSec=10min, OnUnitActiveSec=2h   ─▸ kenna-reconcile.service (oneshot: kenna reconcile)
+kenna-settle.timer      OnCalendar=*-*-* 03:00:00 (daily 3am)  ─▸ kenna-settle.service   (oneshot: kenna settle)
 ```
+
+Both timers are `Persistent=true`, so a run missed while the machine was off
+fires on next boot. Each service soft-exits if the GPU lacks free VRAM, so the
+next scheduled run simply retries.
+
+An earlier event-driven design (an inotify `kenna-watch.path` unit feeding a
+`kenna-debounce.timer`) was dropped in favor of the simpler 2-hour timer;
+`install.sh` removes those old units if present.
 
 ### Project Exclusions
 
@@ -720,12 +720,11 @@ discards a smaller fraction (80% kept vs 53%). No formal multi-session
 eval has been run; the switch to Gemma 4 as default is a judgment call
 based on this one A/B plus qualitative read of outputs.
 
-**On the 26B-A4B settling model:** untested with the new API path. The 26B
-at Q4_K_M is ~17 GB — borderline on 20 GB VRAM alongside overhead. That's
-a separate investigation.
-
-**On GGUF choice for E4B**: at Q6 and above, imatrix gives only a small
-edge vs ggml-org's uniform quants; below Q4 the gap matters more.
+**On a larger settling model:** the Gemma 4 26B-A4B was considered but dropped
+— at Q4_K_M it is ~17 GB, too tight on 20 GB VRAM alongside overhead. The
+leading candidate now is the dense **Gemma 4 12B** (~10 GB at Q6_K, comfortable
+headroom), released 2026-06-03. Not yet evaluated end-to-end for settling;
+settling currently runs on the curation model (Qwen3 8B).
 
 **Why the Dynamic-2.0 quant.** A read-only A/B (`--dry-run=extract`) over 4
 real interactive sessions on 2026-06-04 selected the UD build for its
@@ -812,41 +811,41 @@ is used instead of the integrated GPU (Raphael). This is set before model loadin
 
 ### Re-running reconcile on an already-processed session (testing workflow)
 
-The cursor at `~/.local/share/kenna/state/cursor.json` records `(mtime,
-byte_offset)` per processed session file. `reconcile --session <prefix>`
-filters the session list but does **not** bypass the cursor — an
-already-processed session will be skipped silently with "No candidates
-extracted."
+A committing `reconcile --session <prefix>` respects the cursor at
+`~/.local/share/kenna/state/cursor.json` — an already-processed session is
+skipped silently with "No candidates extracted."
 
-To test a specific session (e.g. A/B comparing models), temporarily remove
-its cursor entry, run reconcile, then restore:
+**To preview or A/B-compare models, use a dry run** — it ignores the cursor
+(reprocesses from the start) and writes nothing to the DB or cursor:
 
 ```
-# 1. back up
-cp ~/.local/share/kenna/state/cursor.json /tmp/cursor.bak
+kenna reconcile --dry-run=extract --session <prefix> --model <gguf>   # raw candidates
+kenna reconcile --dry-run=reconcile --session <prefix>                # would-be store outcomes
+```
 
-# 2. delete the entry (filename format: <project-dir>/<uuid>.jsonl)
+This is the normal way to compare extraction models; no cursor surgery and no
+near-duplicate cleanup afterward.
+
+**Only if you need to actually re-commit** a reprocessed session (rare), the
+cursor entry must be removed first, since a committing run won't reprocess it:
+
+```
+cp ~/.local/share/kenna/state/cursor.json /tmp/cursor.bak   # back up
 python3 -c "
 import json, pathlib
 p = pathlib.Path.home() / '.local/share/kenna/state/cursor.json'
 c = json.loads(p.read_text())
-c['processed'].pop('-home-you-projects-FOO/<uuid>.jsonl')
+c['processed'].pop('-home-you-projects-FOO/<uuid>.jsonl')   # filename: <project-dir>/<uuid>.jsonl
 p.write_text(json.dumps(c, indent=2))"
-
-# 3. run the test
-cargo run -- reconcile --session <uuid-prefix> [--model <gguf>]
-
-# 4. restore
-cp /tmp/cursor.bak ~/.local/share/kenna/state/cursor.json
+kenna reconcile --session <uuid-prefix>                     # re-commit
+cp /tmp/cursor.bak ~/.local/share/kenna/state/cursor.json   # restore
 ```
 
 Reprocessed memories may only partially dedup (temp=1.0 is non-deterministic),
 so the DB can end up with near-duplicates. `kenna settle` handles that, or
-delete the extra memories by hand.
-
-Subagent `agent-aside_question-*.jsonl` files and `<uuid>/` directories
-(without `.jsonl`) do exist in `~/.claude/projects/` but are **not** main
-sessions — confirm the filename exists before editing the cursor.
+delete the extras by hand. Subagent `agent-aside_question-*.jsonl` files and
+`<uuid>/` directories (without `.jsonl`) exist in `~/.claude/projects/` but are
+**not** main sessions — confirm the filename exists before editing the cursor.
 
 ---
 

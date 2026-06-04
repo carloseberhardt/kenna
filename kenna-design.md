@@ -1,4 +1,4 @@
-# Kenna — Design Document (v3)
+# kenna — Design Document (v3)
 
 *Last updated: 2026-03-29*
 

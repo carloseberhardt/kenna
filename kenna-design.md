@@ -725,9 +725,29 @@ at Q4_K_M is ~17 GB — borderline on 20 GB VRAM alongside overhead. That's
 a separate investigation.
 
 **On GGUF choice for E4B**: at Q6 and above, imatrix gives only a small
-edge vs ggml-org's uniform quants; below Q4 the gap matters more. We use
-the imatrix build because it was the same file size as the uniform one —
-no downside.
+edge vs ggml-org's uniform quants; below Q4 the gap matters more.
+
+The configured extraction model is now the **Unsloth Dynamic-2.0 build**
+(`gemma-4-E4B-it-UD-Q6_K_XL.gguf`), chosen over the bartowski imatrix Q6_K
+after a read-only A/B (`--dry-run=extract`) over 4 real interactive sessions
+on 2026-06-04:
+
+- **Bartowski** had higher recall (32 vs 26 candidates) but over-extracted
+  transient task state (e.g. "*was benchmarking DMS vs Wayle*" at conf 0.80)
+  and over-promoted a project-specific concern to **personal** scope — the
+  expensive false-personal error.
+- **UD** was more selective with tighter scope discipline (kept the same
+  concern at project scope). Its weaker extractions tend to arrive with the
+  confidence field omitted (→ serde default 0.50 → dropped at the 0.6
+  threshold), so the drop gate doubles as a precision filter.
+
+The lesson that made this call trustworthy: an earlier A/B that *included* a
+`claude -p` project (`sleeves`) was misleading — junk input inflated UD's
+missing-confidence rate to 53% and would have wrongly rejected it. Always A/B
+on genuine interactive sessions; see also the `exclude_projects` discipline.
+
+Note: the in-code default (`config.rs`) remains the bartowski build as a
+conservative fallback; the UD choice lives in `config.toml`.
 
 ### Extraction model selection
 

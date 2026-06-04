@@ -161,10 +161,11 @@ Produces candidate memories as JSON arrays.
 7. Truncation repair (incomplete last object)
 8. Failures dumped to `~/.local/share/kenna/debug/` for diagnosis
 
-### Phase 2: Curate (Qwen3 8B on GPU)
+### Phase 2: Curate (Gemma 4 12B on GPU)
 
 Per-chunk verification of candidates against the source conversation text.
-Qwen3 is a thinking model — the `<think>` block is stripped before JSON parsing.
+The `<think>` block (if the curation model emits one, as Qwen3 did) is stripped
+before JSON parsing; Gemma 12B is not a thinking model, so the strip is a no-op.
 
 **What curation does:**
 - Verifies each candidate is explicitly evidenced by a user statement. "Absence
@@ -342,7 +343,7 @@ promoted to personal scope:
 - Filter to `scope=Project` memories
 - Cluster by embedding cosine similarity (>= 0.75) using union-find
 - Count distinct `source_project` per cluster
-- Clusters with 3+ projects → ask Qwen3 to synthesize into a single personal trait
+- Clusters with 3+ projects → ask the settling model to synthesize into a single personal trait
 - New personal memory supersedes the individual project ones
 
 This handles Gemma's inconsistent entity keys — semantic similarity catches
@@ -356,8 +357,8 @@ Entities with 3+ active, non-superseded memories are consolidated:
 - Skip entities that are too broad (> max_cluster_size, default 10) — these need
   reclassification first (future work)
 - Skip single-session entities (session-specific noise, not patterns)
-- Ask Qwen3 to synthesize, with instructions to filter out trivial, misclassified,
-  and redundant items during synthesis (curation-during-synthesis)
+- Ask the settling model to synthesize, with instructions to filter out trivial,
+  misclassified, and redundant items during synthesis (curation-during-synthesis)
 - New synthesized memory supersedes the individual ones
 
 ### Guards
@@ -383,7 +384,7 @@ kenna settle [--dry-run]
   │
   ├─ [dry-run stops here, prints report]
   │
-  ├─ Phase 3: Synthesis (Qwen3 8B on GPU, 4096 max tokens)
+  ├─ Phase 3: Synthesis (settling model on GPU, 4096 max tokens)
   │
   ├─ Phase 4: Embedding (nomic-embed on GPU, same backend instance)
   │
@@ -454,7 +455,7 @@ Only the latest version of each fact is returned.
 ## CLI Commands
 
 ```
-kenna reconcile [--dry-run[=chunks|extract|curate|reconcile]] [--limit N] [--model file.gguf] [--session ID_PREFIX]
+kenna reconcile [--dry-run[=chunks|extract|curate|reconcile]] [--limit N] [--model file.gguf] [--curate-model file.gguf] [--session ID_PREFIX]
 kenna settle [--dry-run]     # Cross-project promotion + entity synthesis
 kenna serve                  # MCP server on stdio
 kenna list [--pending] [--scope personal|project] [--category X] [--entity X]
@@ -513,7 +514,8 @@ Applied early in the pipeline during session discovery, before any JSONL is read
 ├── db/                     # LanceDB data directory (Arrow-backed)
 ├── models/
 │   ├── gemma-4-E4B-it-UD-Q6_K_XL.gguf   # Extraction model (~7.5GB, GPU)
-│   ├── qwen3-8b-q4_k_m.gguf             # Curation model (~5GB, GPU)
+│   ├── gemma-4-12b-it-UD-Q6_K_XL.gguf   # Curation + settling model (~10.7GB, GPU)
+│   ├── qwen3-8b-q4_k_m.gguf             # Optional lighter curation fallback (~5GB, GPU)
 │   └── nomic-embed-text-v1.5.Q8_0.gguf  # Embedding model (~138MB, GPU)
 ├── state/
 │   └── cursor.json         # Tracks last-processed mtime per session file
@@ -561,9 +563,10 @@ recurring patterns, and promotes them to personal scope.
 Example: "chose the simpler approach" appearing as project-scoped in 5 different
 projects → personal-scoped "consistently favors simplicity over configurability."
 
-This needs a more capable model than Gemma 4B — either Qwen3 8B with a
-synthesis prompt, or Claude via API for occasional high-quality passes. The
-project-scoped memories with reasoning attached are the raw material.
+This needs a more capable model than Gemma 4B — it now runs on the curation
+model (Gemma 4 12B), with Qwen3 8B as a lighter fallback, or Claude via API for
+occasional high-quality passes. The project-scoped memories with reasoning
+attached are the raw material.
 
 ### Accessed-at Tracking
 MCP recalls should update `accessed_at` on returned memories. Enables future
@@ -720,11 +723,12 @@ discards a smaller fraction (80% kept vs 53%). No formal multi-session
 eval has been run; the switch to Gemma 4 as default is a judgment call
 based on this one A/B plus qualitative read of outputs.
 
-**On a larger settling model:** the Gemma 4 26B-A4B was considered but dropped
-— at Q4_K_M it is ~17 GB, too tight on 20 GB VRAM alongside overhead. The
-leading candidate now is the dense **Gemma 4 12B** (~10 GB at Q6_K, comfortable
-headroom), released 2026-06-03. Not yet evaluated end-to-end for settling;
-settling currently runs on the curation model (Qwen3 8B).
+**On the settling model:** settling defaults to the curation model, so it now
+runs on **Gemma 4 12B** (Q6_K UD, ~10.7 GB) — see the curation-model section
+below. The earlier Gemma 4 26B-A4B was considered and dropped (at Q4_K_M it is
+~17 GB, too tight on 20 GB VRAM alongside overhead). Settling synthesis quality
+on Gemma 12B has not yet been separately evaluated; the prior settling model was
+Qwen3 8B.
 
 **Why the Dynamic-2.0 quant.** A read-only A/B (`--dry-run=extract`) over 4
 real interactive sessions on 2026-06-04 selected the UD build for its
@@ -745,8 +749,10 @@ the build. Always A/B on genuine interactive sessions; see also the
 
 Do NOT use reasoning/thinking models (Qwen3, DeepSeek-R1, etc.) for extraction.
 They generate chain-of-thought before JSON, wasting tokens and causing parse failures.
-Qwen3 IS used for curation, where thinking is an asset — the `<think>` block is
-stripped before JSON parsing in `curate.rs::strip_thinking_block()`.
+Curation is more forgiving — a thinking model's `<think>` block is stripped
+before JSON parsing in `curate.rs::strip_thinking_block()`, which is why Qwen3 8B
+worked there (and is still a valid VRAM-constrained fallback). The current
+curation default, Gemma 4 12B, is not a thinking model, so the strip is a no-op.
 
 **Sampling params**: temp=1.0, top_k=64, top_p=0.95 (per Google's model
 cards — same values for Gemma 3 and Gemma 4). Lower temperatures distort
@@ -754,19 +760,82 @@ the model's calibration and cause worse output. **Re-check when swapping
 model families** — mis-set temperature is exactly the kind of thing that
 silently degrades quality.
 
-To compare extraction models, use a read-only dry run so nothing is written to
-the store and the cursor is not advanced (pin a session so both models see the
-same input):
+To compare models, use a read-only dry run so nothing is written to the store
+and the cursor is not advanced (pin a session so both arms see the same input):
 
 ```
-kenna reconcile --dry-run=extract --session <prefix> --model <filename.gguf>
+kenna reconcile --dry-run=extract --session <prefix> --model <filename.gguf>        # vary extraction
+kenna reconcile --dry-run=curate  --session <prefix> --curate-model <filename.gguf> # vary curation
 ```
+
+`--model` overrides the extraction model; `--curate-model` overrides the
+curation model. To isolate the curation arm, hold `--model` (or the configured
+extraction model) fixed and vary only `--curate-model` — note that extraction is
+sampled (temp 1.0), so the candidate set still differs slightly run-to-run; pin
+a session and/or average across a few to read past that noise. The load lines
+echo each model filename so the output self-labels which arm produced it.
 
 `--dry-run` takes a depth: `chunks` (default — preprocessing preview, no model
 load), `extract` (raw candidates + parse-fail count), `curate` (survivors after
-the Qwen3 pass), or `reconcile` (would-be Accepted/Candidate/Duplicate outcomes
-against the live store). Each level loads only the models it needs and never
-mutates the DB or cursor. Omit the flag for a normal committing run.
+the curation pass), or `reconcile` (would-be Accepted/Candidate/Duplicate
+outcomes against the live store). Each level loads only the models it needs and
+never mutates the DB or cursor. Omit the flag for a normal committing run.
+
+### Gemma 4 12B is the curation model; how we got there
+
+The Unsloth Dynamic-2.0 12B build (`gemma-4-12b-it-UD-Q6_K_XL.gguf`) is the
+default curation model as of 2026-06-04, replacing Qwen3 8B. The switch came
+out of a read-only A/B using the `--curate-model` override (added for exactly
+this): hold extraction fixed (UD E4B) and vary only the curation arm across
+four real interactive sessions. On the thin sessions extraction happened to
+emit a byte-identical candidate set to both arms, making it a clean diff
+despite temp-1.0 sampling.
+
+The thin sessions gave only a faint signal — Qwen3 kept essentially everything
+(19/19 across two sessions, all *active* keeps, not parse-default keeps), while
+Gemma 12B trimmed two or three marginal items. The decisive read came from a
+tiebreaker on a 16-candidate session that happened to be self-referential (the
+session in which we did this work) — normally something you'd exclude from a
+baseline, but here it let us check every decision against known ground truth:
+
+| | Qwen3 8B | Gemma 12B |
+|---|---|---|
+| Dropped | 1 / 16 | 5 / 16 |
+| Demoted to project | 5 | 6 |
+| Kept as-is | 10 | 5 |
+
+All five of Gemma's drops were sound, and Qwen3 kept every one of them. The
+classes Gemma removed that Qwen3 rubber-stamped:
+
+- **Claims about the assistant, not the user** — e.g. "*requires specific
+  confirmation when work needs re-scoping*" describes the assistant's process;
+  Gemma flagged it, Qwen3 kept it as a user trait.
+- **Project task-state posing as durable knowledge** — "*the user integrated a
+  staged `--dry-run` feature*" is project history, not a fact about the person.
+  Gemma dropped it; Qwen3 kept it as a "durable, actionable fact." This is the
+  same pollution class that motivates `exclude_projects`.
+- **Generic developer traits** ("*willing to engage with technical
+  intricacies*") and **near-duplicates** of an already-kept item.
+
+The robust differentiator is reasoning quality: Gemma's `reason` strings quote
+the user's actual words, name the specific project, and cite concrete evidence;
+Qwen3's are competent but generic durability boilerplate, and it cannot reliably
+tell *user did X* from *the assistant did X* from *generic* from *duplicate*.
+The per-session drop-count delta is genuinely thin, so the call rests on that
+reasoning-quality edge and the expectation that it compounds over a broad corpus
+— not on a dramatic single-session number.
+
+Cost: Gemma 12B at Q6 is ~10.7 GB (vs Qwen3's ~5 GB) and ~2× slower
+(~52 s vs ~28 s to curate 16 candidates), which is why the `*_min_free_vram_gb`
+gates were raised to 11 GB. Both are fine for the background 2-hour timer. In
+practice the 12B emitted clean parseable JSON throughout (no thinking-token
+issue; the `strip_thinking_block` step is a harmless no-op for it).
+
+On VRAM-constrained machines `curation_model = "qwen3-8b-q4_k_m.gguf"` remains a
+valid fallback — it curates correctly, just keeps more marginal items and
+reasons more shallowly. **Settling inherits the curation model** (it defaults to
+`curation_model` when `settling_model` is unset), so settling now runs on Gemma
+12B as well; its synthesis quality there has not yet been separately evaluated.
 
 ### Extraction hallucination
 
@@ -775,7 +844,7 @@ training prior (e.g., "Uses macOS" for a developer) — observed on Gemma 3
 originally, and Gemma 4 is not immune either. Mitigations:
 - "You know nothing about this user" framing and anti-inference rules in extraction prompt
 - Multi-turn few-shot examples in assistant turns (NOT system prompt — any concrete noun in the system prompt becomes a hallucination seed that the model parrots into every session)
-- Qwen3 curation verifies claims against source text with explicit "absence of contradiction is not evidence of support" rule
+- Curation (Gemma 4 12B) verifies claims against source text with explicit "absence of contradiction is not evidence of support" rule
 - Curation reasons field enables debugging which hallucinations slip through
 
 **Critical lesson**: Even obviously fictional examples (e.g., "Works at Initech") placed in the system prompt will be extracted verbatim from nearly every session. Few-shot examples must go in chat history turns, not instructions.
@@ -819,12 +888,13 @@ skipped silently with "No candidates extracted."
 (reprocesses from the start) and writes nothing to the DB or cursor:
 
 ```
-kenna reconcile --dry-run=extract --session <prefix> --model <gguf>   # raw candidates
-kenna reconcile --dry-run=reconcile --session <prefix>                # would-be store outcomes
+kenna reconcile --dry-run=extract --session <prefix> --model <gguf>          # raw candidates
+kenna reconcile --dry-run=curate  --session <prefix> --curate-model <gguf>   # curation survivors
+kenna reconcile --dry-run=reconcile --session <prefix>                       # would-be store outcomes
 ```
 
-This is the normal way to compare extraction models; no cursor surgery and no
-near-duplicate cleanup afterward.
+This is the normal way to compare extraction or curation models; no cursor
+surgery and no near-duplicate cleanup afterward.
 
 **Only if you need to actually re-commit** a reprocessed session (rare), the
 cursor entry must be removed first, since a committing run won't reprocess it:

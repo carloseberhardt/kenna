@@ -17,7 +17,7 @@ own.
 Single-user personal project, alpha. Opinionated about hardware:
 
 - Linux with an AMD GPU via ROCm
-- Should work on other ROCm-capable cards with enough VRAM (~10 GB free)
+- Should work on other ROCm-capable cards with enough VRAM (~11 GB free)
 - CUDA/Metal have not been tested; the `llama-cpp-2` features in
   `Cargo.toml` would need to change
 
@@ -31,9 +31,9 @@ Three-phase pipeline, one model on GPU at a time:
 
 1. **Extract** — Gemma 4 E4B reads preprocessed conversation chunks and
    emits candidate memories as JSON
-2. **Curate** — Qwen3 8B verifies each candidate against the source text,
-   drops hallucinations, session trivia, and bare choices without
-   reasoning
+2. **Curate** — Gemma 4 12B verifies each candidate against the source text,
+   drops hallucinations, session trivia, bare choices without reasoning, and
+   claims that are really about the assistant rather than the user
 3. **Embed + reconcile** — nomic-embed-text on GPU; dedup and supersession
    via cosine similarity against the existing store
 
@@ -48,11 +48,17 @@ synthesizes entity-level summaries from atomic memories.
 
 - Rust (edition 2024)
 - ROCm installed and working (`rocm-smi` on PATH)
-- An AMD GPU with enough free VRAM for Gemma 4 E4B or Qwen3 8B (~10 GB)
+- An AMD GPU with enough free VRAM for the curation model (~11 GB; one model
+  is resident at a time)
 - GGUF models — downloaded separately into `~/.local/share/kenna/models/`:
   - `gemma-4-E4B-it-UD-Q6_K_XL.gguf` (~7.5 GB) — extraction
-  - `qwen3-8b-q4_k_m.gguf` (~5 GB) — curation
+  - `gemma-4-12b-it-UD-Q6_K_XL.gguf` (~10.7 GB) — curation (and settling)
   - `nomic-embed-text-v1.5.Q8_0.gguf` (~138 MB) — embedding
+
+On a VRAM-constrained machine you can set `curation_model = "qwen3-8b-q4_k_m.gguf"`
+(~5 GB) in the config instead — it still works, just with lower curation
+quality (see [`kenna-design.md`](kenna-design.md) for the comparison). Lower the
+`*_min_free_vram_gb` gates to match.
 
 ## Build and install
 

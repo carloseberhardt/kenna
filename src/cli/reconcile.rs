@@ -46,10 +46,13 @@ struct SessionExtraction {
     chunks: Vec<ChunkExtraction>,
 }
 
-pub async fn run(dry: Option<DryRunStage>, limit: Option<usize>, model_override: Option<String>, session_filter: Option<String>) -> Result<()> {
+pub async fn run(dry: Option<DryRunStage>, limit: Option<usize>, model_override: Option<String>, curate_model_override: Option<String>, session_filter: Option<String>) -> Result<()> {
     let mut config = Config::load()?;
     if let Some(model) = model_override {
         config.extraction_model = model;
+    }
+    if let Some(model) = curate_model_override {
+        config.curation_model = model;
     }
 
     // Control axes derived from the dry-run depth:
@@ -145,7 +148,7 @@ pub async fn run(dry: Option<DryRunStage>, limit: Option<usize>, model_override:
         return Ok(());
     }
 
-    println!("Loading extraction model...");
+    println!("Loading extraction model ({})...", config.extraction_model);
     let extract_backend = LlamaBackend::new(crate::inference::llama::LlamaConfig {
         generation_model_path: Some(extract_path.to_str().unwrap().to_string()),
         embedding_model_path: None,
@@ -268,7 +271,7 @@ pub async fn run(dry: Option<DryRunStage>, limit: Option<usize>, model_override:
     // ── Phase B: Curate with Qwen3 ──
     drop(extract_backend); // free GPU memory
 
-    println!("Loading curation model...");
+    println!("Loading curation model ({})...", config.curation_model);
     let curate_backend = LlamaBackend::new(crate::inference::llama::LlamaConfig {
         generation_model_path: Some(curate_path.to_str().unwrap().to_string()),
         embedding_model_path: None,

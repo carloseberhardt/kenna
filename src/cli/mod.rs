@@ -38,6 +38,9 @@ enum Command {
         /// Override extraction model GGUF filename (in models dir)
         #[arg(long)]
         model: Option<String>,
+        /// Override curation model GGUF filename (in models dir)
+        #[arg(long)]
+        curate_model: Option<String>,
         /// Process only sessions whose ID starts with this prefix
         #[arg(long)]
         session: Option<String>,
@@ -127,8 +130,8 @@ impl Cli {
         let db = MemoryDb::open(&Config::db_path()).await?;
 
         match self.command {
-            Command::Reconcile { dry_run, limit, model, session } => {
-                reconcile::run(dry_run, limit, model, session).await
+            Command::Reconcile { dry_run, limit, model, curate_model, session } => {
+                reconcile::run(dry_run, limit, model, curate_model, session).await
             }
             Command::Settle { dry_run } => {
                 settle::run(dry_run).await

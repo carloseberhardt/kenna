@@ -27,7 +27,8 @@ pub struct Config {
     pub settling_model: Option<String>,
     /// Minimum free VRAM (GB) required before reconcile will start.
     /// Checked via rocm-smi. If rocm-smi is unavailable, the check is skipped.
-    /// Reconcile loads Gemma (~3GB) then Qwen (~5GB) sequentially, so peak need is ~6GB.
+    /// Reconcile loads the extraction model (~7.5GB) then the curation model
+    /// sequentially; with Gemma 12B curation (~10.7GB at Q6) peak need is ~11GB.
     pub reconcile_min_free_vram_gb: f64,
     /// Minimum free VRAM (GB) required before settle will start.
     /// Default is higher than reconcile to leave room for larger synthesis models.
@@ -57,12 +58,12 @@ impl Default for Config {
             confidence_drop_threshold: 0.6,
             confidence_auto_accept_threshold: 0.85,
             extraction_model: "gemma-4-E4B-it-UD-Q6_K_XL.gguf".into(),
-            curation_model: "qwen3-8b-q4_k_m.gguf".into(),
+            curation_model: "gemma-4-12b-it-UD-Q6_K_XL.gguf".into(),
             embedding_model: "nomic-embed-text-v1.5.Q8_0.gguf".into(),
             embedding_dimensions: 768,
             settling_model: None,
-            reconcile_min_free_vram_gb: 7.0,
-            settle_min_free_vram_gb: 7.0,
+            reconcile_min_free_vram_gb: 11.0,
+            settle_min_free_vram_gb: 11.0,
             dedup_cosine_threshold: 0.85,
             supersession_cosine_min: 0.7,
             supersession_cosine_max: 0.85,

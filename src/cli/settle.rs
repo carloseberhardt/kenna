@@ -58,6 +58,7 @@ pub async fn run(dry_run: bool) -> Result<()> {
         gen_path.to_str().unwrap(),
         embed_path.to_str().unwrap(),
         99, // GPU layers for generation model
+        config.embedding_dimensions,
     )?;
 
     let generate_fn = |system: &str, user: &str| -> Result<String> {

@@ -37,8 +37,9 @@ Three-phase pipeline, one model on GPU at a time:
 3. **Embed + reconcile** — nomic-embed-text on GPU; dedup and supersession
    via cosine similarity against the existing store
 
-Stored in an embedded LanceDB vector store. Retrieved via the
-`kenna_recall` MCP tool (semantic vector search).
+Stored in an embedded Turso (SQLite) database, with embeddings kept as
+BLOBs. Retrieved via the `kenna_recall` MCP tool, which ranks candidates
+by exact cosine similarity computed in-app.
 
 A periodic settling pass (`kenna settle`) consolidates the store —
 promotes patterns that recur across projects to personal scope, and

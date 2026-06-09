@@ -202,7 +202,7 @@ fn try_load_embedding_backend(config: &Config) -> Option<LlamaBackend> {
     }
 
     // Use CPU for embedding model — small model, and Vulkan has issues with BERT
-    match LlamaBackend::embedding_only(model_path.to_str()?, 0) {
+    match LlamaBackend::embedding_only(model_path.to_str()?, 0, config.embedding_dimensions) {
         Ok(backend) => Some(backend),
         Err(e) => {
             tracing::warn!("Failed to load embedding model: {e}");

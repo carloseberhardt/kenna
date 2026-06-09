@@ -2,7 +2,7 @@ use anyhow::Result;
 use comfy_table::{Cell, Table};
 
 use crate::inference::InferenceBackend;
-use crate::storage::db::{MemoryDb, ListFilters};
+use crate::storage::db::MemoryDb;
 use crate::storage::models::Memory;
 
 /// Search memories. Uses vector search if an inference backend is provided,
@@ -17,7 +17,7 @@ pub async fn run(
         let embedding = backend.embed(query)?;
         db.vector_search(embedding, limit, None).await?
     } else {
-        keyword_search(db, query, limit).await?
+        db.keyword_search(query, limit).await?
     };
 
     if matches.is_empty() {
@@ -28,27 +28,6 @@ pub async fn run(
     print_results(&matches);
     println!("\n{} result(s).", matches.len());
     Ok(())
-}
-
-async fn keyword_search(db: &MemoryDb, query: &str, limit: usize) -> Result<Vec<Memory>> {
-    let all = db
-        .list(&ListFilters {
-            limit: Some(100_000),
-            ..Default::default()
-        })
-        .await?;
-
-    let query_lower = query.to_lowercase();
-    Ok(all
-        .into_iter()
-        .filter(|e| {
-            e.content.to_lowercase().contains(&query_lower)
-                || e.entity
-                    .as_ref()
-                    .is_some_and(|ent| ent.to_lowercase().contains(&query_lower))
-        })
-        .take(limit)
-        .collect())
 }
 
 fn print_results(matches: &[Memory]) {

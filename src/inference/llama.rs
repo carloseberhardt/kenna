@@ -27,6 +27,10 @@ pub struct LlamaConfig {
     /// Batch size for prompt processing. Larger = faster prefill for long prompts.
     /// Doesn't affect generation speed, but our prompts are large relative to outputs.
     pub n_batch: u32,
+    /// Expected embedding dimension (from `config.embedding_dimensions`). When
+    /// set and an embedding model is loaded, the model's actual dimension is
+    /// validated against it at init.
+    pub expected_embedding_dim: Option<usize>,
 }
 
 impl Default for LlamaConfig {
@@ -37,6 +41,7 @@ impl Default for LlamaConfig {
             n_gpu_layers: 99,
             generation_ctx_size: 8192,
             n_batch: 2048,
+            expected_embedding_dim: None,
         }
     }
 }
@@ -102,6 +107,19 @@ impl LlamaBackend {
             .map(|m| m.n_embd() as usize)
             .unwrap_or(768);
 
+        // Validate the model's actual embedding dimension against the configured
+        // expectation, so a model swap that changes the dimension fails loudly
+        // here rather than silently corrupting the store.
+        if let Some(expected) = config.expected_embedding_dim
+            && embedding_model.is_some()
+            && embedding_dim != expected
+        {
+            bail!(
+                "embedding model dimension {embedding_dim} does not match \
+                 configured embedding_dimensions {expected}"
+            );
+        }
+
         let gen_ctx = if let Some(ref model) = generation_model {
             let ctx_params = LlamaContextParams::default()
                 .with_n_ctx(NonZeroU32::new(config.generation_ctx_size))
@@ -130,25 +148,30 @@ impl LlamaBackend {
     }
 
     /// Create a backend with only the embedding model loaded (for MCP serve).
-    pub fn embedding_only(model_path: &str, _n_gpu_layers: u32) -> Result<Self> {
+    /// `expected_dim` is validated against the model's actual dimension.
+    pub fn embedding_only(model_path: &str, _n_gpu_layers: u32, expected_dim: usize) -> Result<Self> {
         Self::new(LlamaConfig {
             generation_model_path: None,
             embedding_model_path: Some(model_path.to_string()),
             n_gpu_layers: 0,
+            expected_embedding_dim: Some(expected_dim),
             ..Default::default()
         })
     }
 
     /// Create a backend with both models loaded (for reconcile).
+    /// `expected_dim` is validated against the embedding model's actual dimension.
     pub fn full(
         generation_model_path: &str,
         embedding_model_path: &str,
         n_gpu_layers: u32,
+        expected_dim: usize,
     ) -> Result<Self> {
         Self::new(LlamaConfig {
             generation_model_path: Some(generation_model_path.to_string()),
             embedding_model_path: Some(embedding_model_path.to_string()),
             n_gpu_layers,
+            expected_embedding_dim: Some(expected_dim),
             ..Default::default()
         })
     }

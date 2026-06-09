@@ -192,7 +192,7 @@ Embeds candidates and reconciles against the existing store:
 5. **Supersession**: Same entity + cosine 0.7-0.85 → new replaces old.
    Sets `supersedes` on new, `superseded_by` on old. Already-superseded
    memories are skipped. Complementary facts (similarity < 0.7) coexist.
-6. **Persist** to LanceDB with embedding
+6. **Persist** to Turso with the embedding stored as a BLOB
 
 **Superseded memories** are filtered from MCP recall results and CLI list output.
 They remain in the database for provenance tracking.
@@ -511,7 +511,7 @@ Applied early in the pipeline during session discovery, before any JSONL is read
 
 ```
 ~/.local/share/kenna/
-├── db/                     # LanceDB data directory (Arrow-backed)
+├── db/                     # Turso (embedded SQLite) database — kenna.db
 ├── models/
 │   ├── gemma-4-E4B-it-UD-Q6_K_XL.gguf   # Extraction model (~7.5GB, GPU)
 │   ├── gemma-4-12b-it-UD-Q6_K_XL.gguf   # Curation + settling model (~10.7GB, GPU)

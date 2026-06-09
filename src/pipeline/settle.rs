@@ -11,7 +11,7 @@ use crate::storage::models::{Category, Memory, Lifecycle, Scope};
 
 use super::curate::{strip_thinking_block, truncate_str};
 use super::extract::strip_code_fences;
-use super::reconcile::cosine_similarity;
+use crate::storage::vector::cosine_similarity;
 
 /// Sentinel value for source_session on settled memories.
 const SETTLING_SESSION: &str = "settling";
@@ -406,11 +406,8 @@ pub async fn run_settle(
             superseded_by: None,
         };
 
-        db.insert(vec![memory]).await?;
-
-        for source in &promotion.source_memories {
-            let _ = db.mark_superseded(&source.id, &new_id).await;
-        }
+        let source_ids: Vec<Uuid> = promotion.source_memories.iter().map(|s| s.id).collect();
+        db.apply_settlement(memory, &source_ids).await?;
 
         promotion.new_id = Some(new_id);
         tracing::info!(
@@ -456,11 +453,7 @@ pub async fn run_settle(
             superseded_by: None,
         };
 
-        db.insert(vec![memory]).await?;
-
-        for source in &synthesis.source_memories {
-            let _ = db.mark_superseded(&source.id, &new_id).await;
-        }
+        db.apply_settlement(memory, &source_ids).await?;
 
         synthesis.new_id = Some(new_id);
         tracing::info!(

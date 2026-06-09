@@ -347,6 +347,7 @@ pub async fn run(dry: Option<DryRunStage>, limit: Option<usize>, model_override:
     let embed_backend = LlamaBackend::embedding_only(
         embed_path.to_str().unwrap(),
         0,
+        config.embedding_dimensions,
     )?;
 
     let db = MemoryDb::open(&Config::db_path()).await?;

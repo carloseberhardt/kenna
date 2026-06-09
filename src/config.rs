@@ -134,8 +134,14 @@ impl Config {
             .join("kenna")
     }
 
-    pub fn db_path() -> PathBuf {
+    /// Directory holding the database file.
+    pub fn db_dir() -> PathBuf {
         Self::data_dir().join("db")
+    }
+
+    /// Path to the Turso database file (a single file, not a directory).
+    pub fn db_path() -> PathBuf {
+        Self::db_dir().join("kenna.db")
     }
 
     pub fn models_dir() -> PathBuf {
@@ -161,7 +167,7 @@ impl Config {
     /// Ensure all data directories exist.
     pub fn ensure_dirs() -> Result<()> {
         for dir in [
-            Self::db_path(),
+            Self::db_dir(),
             Self::models_dir(),
             Self::state_dir(),
             Self::logs_dir(),

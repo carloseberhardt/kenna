@@ -154,7 +154,7 @@ pub async fn run_server() -> Result<()> {
     }
 
     eprintln!("kenna: loading embedding model...");
-    let backend = LlamaBackend::embedding_only(embed_path.to_str().unwrap(), 0)?;
+    let backend = LlamaBackend::embedding_only(embed_path.to_str().unwrap(), 0, config.embedding_dimensions)?;
 
     let db = MemoryDb::open(&Config::db_path()).await?;
 

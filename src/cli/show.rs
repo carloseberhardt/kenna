@@ -21,7 +21,7 @@ pub async fn find_by_prefix(db: &MemoryDb, prefix: &str) -> Result<Memory> {
     // Prefix match: list all and filter
     let all = db
         .list(&crate::storage::db::ListFilters {
-            limit: Some(100_000),
+            limit: None,
             ..Default::default()
         })
         .await?;

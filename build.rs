@@ -5,7 +5,9 @@ use std::process::Command;
 /// `kenna --version` can report exactly which commit a build came from.
 fn main() {
     let sha = run_git(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
-    let dirty = run_git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
+    // Tracked changes only — untracked scratch files shouldn't flip the flag,
+    // since they don't affect the build.
+    let dirty = run_git(&["status", "--porcelain", "--untracked-files=no"]).is_some_and(|s| !s.is_empty());
     let suffix = if dirty { "-dirty" } else { "" };
     println!("cargo:rustc-env=KENNA_GIT_SHA={sha}{suffix}");
 

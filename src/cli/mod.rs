@@ -17,8 +17,15 @@ use crate::inference::llama::LlamaBackend;
 use crate::storage::db::MemoryDb;
 use crate::storage::models::{Category, Lifecycle, Scope};
 
+/// Crate version plus the git commit it was built from, e.g. `0.1.0 (c33b9ce)`.
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("KENNA_GIT_SHA"), ")");
+
 #[derive(Parser)]
-#[command(name = "kenna", about = "Durable, implicit memory for Claude Code")]
+#[command(
+    name = "kenna",
+    version = VERSION,
+    about = "Durable, implicit memory for Claude Code"
+)]
 pub struct Cli {
     #[command(subcommand)]
     command: Command,

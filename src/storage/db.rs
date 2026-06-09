@@ -148,6 +148,11 @@ impl MemoryDb {
             params.push(Value::from(entity.clone()));
             idx += 1;
         }
+        if let Some(source_project) = &filters.source_project {
+            conditions.push(format!("source_project = ?{idx}"));
+            params.push(Value::from(source_project.clone()));
+            idx += 1;
+        }
         if filters.exclude_superseded {
             conditions.push("superseded_by IS NULL".to_string());
         }
@@ -214,6 +219,54 @@ impl MemoryDb {
             .collect();
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         Ok(scored.into_iter().take(limit).map(|(_, m)| m).collect())
+    }
+
+    /// Find the most-similar accepted memory eligible to *dedup* a new memory of
+    /// the given scope/project, returning it with its cosine score (or `None`
+    /// if there are no eligible candidates).
+    ///
+    /// Scoping is deliberately narrow so the settling pass keeps the signal it
+    /// needs: a project candidate is compared only against memories from the
+    /// **same `source_project`** or ones already promoted to **personal** scope;
+    /// a personal candidate is compared only against personal memories.
+    /// Cross-project near-duplicates are intentionally *not* matched here — they
+    /// are left to coexist as separate rows so `settle`'s promotion pass can
+    /// count distinct projects. See `dedup-scoping-issue.md`.
+    pub async fn find_dedup_match(
+        &self,
+        query_embedding: &[f32],
+        scope: Scope,
+        source_project: Option<&str>,
+    ) -> Result<Option<(f32, Memory)>> {
+        let conn = self.conn().await?;
+
+        let mut sql = format!("SELECT {COLS} FROM memories WHERE lifecycle = ?1");
+        let mut params = vec![Value::from(Lifecycle::Accepted.to_string())];
+        match (scope, source_project) {
+            // Project candidate with a known project: same project OR already-personal.
+            (Scope::Project, Some(project)) => {
+                sql.push_str(" AND (source_project = ?2 OR scope = ?3)");
+                params.push(Value::from(project.to_string()));
+                params.push(Value::from(Scope::Personal.to_string()));
+            }
+            // Personal candidate (or a project candidate with no project info):
+            // dedup only against personal, never against another project.
+            _ => {
+                sql.push_str(" AND scope = ?2");
+                params.push(Value::from(Scope::Personal.to_string()));
+            }
+        }
+
+        let mut rows = conn
+            .query(&sql, params_from_iter(params))
+            .await
+            .context("dedup candidate query failed")?;
+        let candidates = collect_memories(&mut rows).await?;
+
+        Ok(candidates
+            .into_iter()
+            .map(|m| (cosine_similarity(query_embedding, &m.embedding), m))
+            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)))
     }
 
     pub async fn delete(&self, id: &Uuid) -> Result<()> {
@@ -405,6 +458,7 @@ pub struct ListFilters {
     pub category: Option<Category>,
     pub lifecycle: Option<Lifecycle>,
     pub entity: Option<String>,
+    pub source_project: Option<String>,
     /// `None` means no limit.
     pub limit: Option<usize>,
     /// If true, exclude memories that have been superseded (superseded_by IS NULL).
@@ -712,6 +766,84 @@ mod tests {
         let after = db.get_by_id(&s1.id).await.unwrap().unwrap();
         assert_eq!(after.superseded_by, None);
         assert_eq!(after.content, "src1");
+        cleanup(&path);
+    }
+
+    fn mk_project_memory(content: &str, embedding: Vec<f32>, project: &str) -> Memory {
+        let mut m = mk_memory(content, embedding, Lifecycle::Accepted);
+        m.scope = Scope::Project;
+        m.source_project = Some(project.to_string());
+        m
+    }
+
+    #[tokio::test]
+    async fn dedup_match_is_project_scoped() {
+        let (db, path) = temp_db().await;
+        let e = vec![1.0, 0.0, 0.0, 0.0];
+        db.insert(vec![mk_project_memory("alpha mem", e.clone(), "alpha")])
+            .await
+            .unwrap();
+
+        // An identical embedding from a *different* project is not a dedup match
+        // — it must coexist so the settling pass can count distinct projects.
+        let cross = db
+            .find_dedup_match(&e, Scope::Project, Some("beta"))
+            .await
+            .unwrap();
+        assert!(cross.is_none(), "cross-project near-dup must not match");
+
+        // The same project, however, is a match.
+        let (score, m) = db
+            .find_dedup_match(&e, Scope::Project, Some("alpha"))
+            .await
+            .unwrap()
+            .expect("same-project dup should match");
+        assert!(score > 0.99);
+        assert_eq!(m.content, "alpha mem");
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn dedup_project_candidate_matches_personal() {
+        let (db, path) = temp_db().await;
+        let e = vec![1.0, 0.0, 0.0, 0.0];
+        // An already-promoted personal memory.
+        db.insert(vec![mk_memory("personal trait", e.clone(), Lifecycle::Accepted)])
+            .await
+            .unwrap();
+
+        // A project candidate matching it dedups against the personal row, so we
+        // don't re-hoard a trait that has already been promoted.
+        let (score, got) = db
+            .find_dedup_match(&e, Scope::Project, Some("beta"))
+            .await
+            .unwrap()
+            .expect("project candidate should match personal");
+        assert!(score > 0.99);
+        assert_eq!(got.content, "personal trait");
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_source_project() {
+        let (db, path) = temp_db().await;
+        let e = vec![1.0, 0.0];
+        let mut a = mk_project_memory("a", e.clone(), "alpha");
+        a.entity = Some("editor".to_string());
+        let mut b = mk_project_memory("b", e.clone(), "beta");
+        b.entity = Some("editor".to_string());
+        db.insert(vec![a, b]).await.unwrap();
+
+        let got = db
+            .list(&ListFilters {
+                entity: Some("editor".to_string()),
+                source_project: Some("alpha".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].source_project.as_deref(), Some("alpha"));
         cleanup(&path);
     }
 }

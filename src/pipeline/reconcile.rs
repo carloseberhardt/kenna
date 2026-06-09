@@ -115,18 +115,21 @@ async fn reconcile_one(
     // 3. Embed the content
     let embedding = backend.embed(&candidate.content)?;
 
-    // 4. Check for duplicates via vector search
-    let similar = db.vector_search(embedding.clone(), 1, None).await?;
-    if let Some(existing) = similar.first() {
-        let similarity = cosine_similarity(&embedding, &existing.embedding);
-        if similarity > config.dedup_cosine_threshold {
-            tracing::debug!(
-                "Duplicate detected (similarity={similarity:.3}): {:?} ≈ {:?}",
-                &candidate.content[..candidate.content.len().min(50)],
-                &existing.content[..existing.content.len().min(50)],
-            );
-            return Ok(ReconcileOutcome::DroppedDuplicate(existing.id));
-        }
+    // 4. Check for duplicates — scoped to this project (+ already-personal),
+    // not the whole store. Cross-project near-duplicates are left to coexist so
+    // the settling pass can count distinct projects and promote. See
+    // dedup-scoping-issue.md.
+    if let Some((similarity, existing)) = db
+        .find_dedup_match(&embedding, scope, Some(project_dir_name))
+        .await?
+        && similarity > config.dedup_cosine_threshold
+    {
+        tracing::debug!(
+            "Duplicate detected (similarity={similarity:.3}): {:?} ≈ {:?}",
+            &candidate.content[..candidate.content.len().min(50)],
+            &existing.content[..existing.content.len().min(50)],
+        );
+        return Ok(ReconcileOutcome::DroppedDuplicate(existing.id));
     }
 
     // 5. Check for supersession (same entity, newer content)
@@ -136,11 +139,15 @@ async fn reconcile_one(
     // Below 0.7 = different facts about the same topic → coexist.
     //   e.g., "Values simplicity" and "Values testability" under design-philosophy.
     // Merge/combine of related-but-distinct memories is deferred to the settling pass.
+    // Supersession is scoped to the same project too: a newer claim replaces an
+    // older one within a project's history, but the same entity across different
+    // projects coexists (again, so settle can see the cross-project signal).
     let mut supersedes_ids: Vec<Uuid> = Vec::new();
     if let Some(ref entity) = candidate.entity {
         let entity_matches = db
             .list(&crate::storage::db::ListFilters {
                 entity: Some(entity.clone()),
+                source_project: Some(project_dir_name.to_string()),
                 limit: Some(10),
                 ..Default::default()
             })

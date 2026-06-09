@@ -17,6 +17,7 @@ pub async fn run(
         category,
         lifecycle,
         entity,
+        source_project: None,
         limit: Some(limit),
         exclude_superseded: false, // we filter superseded in Rust below
     };

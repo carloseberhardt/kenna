@@ -169,7 +169,7 @@ pub async fn run_settle(
     let all_memories = db
         .list(&crate::storage::db::ListFilters {
             exclude_superseded: true,
-            limit: Some(100_000),
+            limit: None,
             ..Default::default()
         })
         .await?;

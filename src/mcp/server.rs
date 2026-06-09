@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerInfo};
@@ -154,7 +154,10 @@ pub async fn run_server() -> Result<()> {
     }
 
     eprintln!("kenna: loading embedding model...");
-    let backend = LlamaBackend::embedding_only(embed_path.to_str().unwrap(), 0, config.embedding_dimensions)?;
+    let embed_path_str = embed_path
+        .to_str()
+        .with_context(|| format!("embedding model path is not valid UTF-8: {}", embed_path.display()))?;
+    let backend = LlamaBackend::embedding_only(embed_path_str, 0, config.embedding_dimensions)?;
 
     let db = MemoryDb::open(&Config::db_path()).await?;
 

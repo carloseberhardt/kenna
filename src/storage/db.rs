@@ -232,6 +232,12 @@ impl MemoryDb {
     /// Cross-project near-duplicates are intentionally *not* matched here — they
     /// are left to coexist as separate rows so `settle`'s promotion pass can
     /// count distinct projects. See `dedup-scoping-issue.md`.
+    ///
+    /// Unlike `vector_search` (recall, accepted-only), dedup considers **both**
+    /// lifecycles — a pending `Candidate` is still "already in the store", and
+    /// excluding it lets re-extraction pile up duplicate Candidate rows in the
+    /// review queue. It also restricts to **live** rows (`superseded_by IS NULL`):
+    /// a retired row must not be able to veto recording a genuine change/reversal.
     pub async fn find_dedup_match(
         &self,
         query_embedding: &[f32],
@@ -240,19 +246,19 @@ impl MemoryDb {
     ) -> Result<Option<(f32, Memory)>> {
         let conn = self.conn().await?;
 
-        let mut sql = format!("SELECT {COLS} FROM memories WHERE lifecycle = ?1");
-        let mut params = vec![Value::from(Lifecycle::Accepted.to_string())];
+        let mut sql = format!("SELECT {COLS} FROM memories WHERE superseded_by IS NULL");
+        let mut params: Vec<Value> = Vec::new();
         match (scope, source_project) {
             // Project candidate with a known project: same project OR already-personal.
             (Scope::Project, Some(project)) => {
-                sql.push_str(" AND (source_project = ?2 OR scope = ?3)");
+                sql.push_str(" AND (source_project = ?1 OR scope = ?2)");
                 params.push(Value::from(project.to_string()));
                 params.push(Value::from(Scope::Personal.to_string()));
             }
             // Personal candidate (or a project candidate with no project info):
             // dedup only against personal, never against another project.
             _ => {
-                sql.push_str(" AND scope = ?2");
+                sql.push_str(" AND scope = ?1");
                 params.push(Value::from(Scope::Personal.to_string()));
             }
         }
@@ -311,25 +317,6 @@ impl MemoryDb {
             .await?;
         if n == 0 {
             bail!("memory not found: {id}");
-        }
-        Ok(())
-    }
-
-    /// Mark an existing memory as superseded by a new one.
-    pub async fn mark_superseded(&self, old_id: &Uuid, new_id: &Uuid) -> Result<()> {
-        let conn = self.conn().await?;
-        let n = conn
-            .execute(
-                "UPDATE memories SET superseded_by = ?1, updated_at = ?2 WHERE id = ?3",
-                params_from_iter(vec![
-                    Value::from(new_id.to_string()),
-                    Value::from(Utc::now().timestamp_micros()),
-                    Value::from(old_id.to_string()),
-                ]),
-            )
-            .await?;
-        if n == 0 {
-            bail!("memory not found: {old_id}");
         }
         Ok(())
     }
@@ -750,6 +737,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_settlement_empty_sources_is_plain_insert() {
+        // Finding 1: apply_settlement with no superseded_ids degenerates to a
+        // transactional single-row insert, touching nothing else. This is what
+        // lets reconcile use it unconditionally (no branch on supersedes.is_empty()).
+        let (db, path) = temp_db().await;
+        let existing = mk_memory("untouched", vec![1.0, 0.0], Lifecycle::Accepted);
+        let existing_id = existing.id;
+        db.insert(vec![existing]).await.unwrap();
+
+        let new = mk_memory("fresh", vec![0.0, 1.0], Lifecycle::Candidate);
+        let new_id = new.id;
+        db.apply_settlement(new, &[]).await.unwrap();
+
+        // The new row landed...
+        assert!(db.get_by_id(&new_id).await.unwrap().is_some());
+        // ...and the pre-existing row is untouched (no stray supersession).
+        let after = db.get_by_id(&existing_id).await.unwrap().unwrap();
+        assert_eq!(after.superseded_by, None);
+        assert_eq!(after.content, "untouched");
+        cleanup(&path);
+    }
+
+    #[tokio::test]
     async fn apply_settlement_rolls_back_on_failure() {
         let (db, path) = temp_db().await;
         let s1 = mk_memory("src1", vec![1.0, 0.0], Lifecycle::Accepted);
@@ -821,6 +831,59 @@ mod tests {
             .expect("project candidate should match personal");
         assert!(score > 0.99);
         assert_eq!(got.content, "personal trait");
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn dedup_matches_candidate_lifecycle_rows() {
+        // Finding 2: dedup must see pending Candidate rows too, otherwise
+        // re-extraction of a below-auto-accept fact piles up duplicate rows.
+        let (db, path) = temp_db().await;
+        let e = vec![1.0, 0.0, 0.0, 0.0];
+        let mut c = mk_project_memory("pending alpha mem", e.clone(), "alpha");
+        c.lifecycle = Lifecycle::Candidate;
+        db.insert(vec![c]).await.unwrap();
+
+        let (score, got) = db
+            .find_dedup_match(&e, Scope::Project, Some("alpha"))
+            .await
+            .unwrap()
+            .expect("candidate-lifecycle row should be a dedup match");
+        assert!(score > 0.99);
+        assert_eq!(got.content, "pending alpha mem");
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn dedup_ignores_superseded_rows() {
+        // Finding 3: a retired (superseded) row must not veto a new fact. Set up
+        // A→B via apply_settlement (the production supersession path), then a
+        // candidate whose embedding ≈ A's must never match the dead A row.
+        let (db, path) = temp_db().await;
+        let a_emb = vec![1.0, 0.0, 0.0, 0.0];
+        let b_emb = vec![0.0, 1.0, 0.0, 0.0];
+        let a = mk_memory("prefers vim", a_emb.clone(), Lifecycle::Accepted);
+        let a_id = a.id;
+        db.insert(vec![a]).await.unwrap();
+
+        // B supersedes A, atomically (A.superseded_by = B, both live in store).
+        let b = mk_memory("switched to neovim", b_emb, Lifecycle::Accepted);
+        let b_id = b.id;
+        db.apply_settlement(b, &[a_id]).await.unwrap();
+
+        // A candidate matching A exactly: the best (only) live match is B, never A.
+        let matched_id = db
+            .find_dedup_match(&a_emb, Scope::Personal, None)
+            .await
+            .unwrap()
+            .map(|(_, m)| m.id);
+        // A is definitively never returned; the only live match is B (or None if
+        // B is below any threshold the caller applies).
+        assert_ne!(matched_id, Some(a_id), "superseded row A must not be a dedup match");
+        assert!(
+            matched_id == Some(b_id) || matched_id.is_none(),
+            "the only eligible live match is B"
+        );
         cleanup(&path);
     }
 

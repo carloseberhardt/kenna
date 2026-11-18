@@ -1,6 +1,8 @@
 # kenna — Design Document (v3)
 
-*Last updated: 2026-06-04*
+*Last updated: 2026-11-18. Project archived; see
+[Overlap with auto memory (measured)](#overlap-with-auto-memory-measured)
+and the README for why.*
 
 ## Naming Convention
 

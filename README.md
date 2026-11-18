@@ -2,38 +2,38 @@
 
 _Implicit, user-scoped memory for Claude Code._
 
+> **Archived, November 2026.** I've stopped running Kenna. The code stays
+> here for reference, but it isn't maintained.
+
 Kenna reads Claude Code's own session transcripts in the background and
-extracts knowledge — preferences, decisions, hardware, recurring patterns,
-etc. It makes that knowledge available to future sessions through a
-read-only MCP tool. The goal is cross-project continuity.
+extracts knowledge about the user: preferences, decisions, hardware,
+recurring patterns. It makes that knowledge available to future sessions
+through a read-only MCP tool and a `kenna search` CLI. The goal was
+continuity across projects.
 
-### How this relates to Claude Code's auto memory
+## Why it's archived
 
-Claude Code now has [auto memory](https://code.claude.com/docs/en/memory#auto-memory):
-during a session, Claude decides on its own what to save, including notes
-about you (`user`, `feedback`), into markdown files that load at the start
-of later sessions. That overlaps with what Kenna does. What's left for Kenna:
+Claude Code shipped [auto memory](https://code.claude.com/docs/en/memory#auto-memory)
+after I started this. During a session, Claude decides on its own what to
+save, including notes about you (`user`, `feedback`), and those notes load
+at the start of later sessions in the same repo. That's most of what Kenna
+was for.
 
-- **Scope.** Auto memory is per repository and machine-local. A fact Claude
-  learns about you in one project isn't visible in another. Kenna's
-  personal-scope memories are returned everywhere.
-- **Coverage.** Auto memory only keeps what the in-session model chose to
-  write down. Kenna re-reads the full transcripts afterward, so it can pick
-  up things nobody flagged at the time.
-- **Retrieval.** Auto memory loads the first 200 lines / 25KB of
-  `MEMORY.md` into every session. Kenna is queried on demand, so the store
-  can grow without costing context.
-
-Auto memory's `autoMemoryDirectory` setting can point every project at one
-shared directory, which addresses the scope gap without Kenna, at the cost
-of all projects sharing one 200-line index.
-
-On the author's own data, auto memory already held about half of the
-memories Kenna rated useful. Kenna's additions were mostly project-level
-preferences the session never saved. Numbers and method are in
+I measured the overlap on my own data before deciding. Auto memory already
+held about half of the memories Kenna rated useful. For personal facts,
+the thing Kenna was built around, it added almost nothing new: 2 useful
+memories out of 51. What Kenna did add was mostly project-level preferences
+the session never thought to save, plus reach across repos, since auto
+memory is per repository. Numbers and method are in
 [`kenna-design.md`](kenna-design.md#overlap-with-auto-memory-measured).
 
-## Status
+That wasn't enough to justify a GPU pipeline running every two hours,
+especially since my sessions rarely called it. If cross-repo reach is what
+you want, try pointing auto memory's `autoMemoryDirectory` setting at one
+shared directory first. The tradeoff is that every project then shares one
+200-line index.
+
+## Status when archived
 
 Single-user personal project, alpha. Opinionated about hardware:
 
@@ -42,9 +42,8 @@ Single-user personal project, alpha. Opinionated about hardware:
 - CUDA/Metal have not been tested; the `llama-cpp-2` features in
   `Cargo.toml` would need to change
 
-Expect rough edges. See [`kenna-design.md`](kenna-design.md) for the deep
-dive — architecture, known issues, and the reasoning behind specific
-choices.
+See [`kenna-design.md`](kenna-design.md) for the deep dive: architecture,
+known issues, and the reasoning behind specific choices.
 
 ## How it works, briefly
 

@@ -7,10 +7,31 @@ extracts knowledge — preferences, decisions, hardware, recurring patterns,
 etc. It makes that knowledge available to future sessions through a
 read-only MCP tool. The goal is cross-project continuity.
 
-It is **not** a replacement for Claude Code's built-in project memory
-(`/remember`, `CLAUDE.md`). Those are for explicit, project-scoped notes
-you choose to persist. Kenna is the implicit layer that accumulates on its
-own.
+### How this relates to Claude Code's auto memory
+
+Claude Code now has [auto memory](https://code.claude.com/docs/en/memory#auto-memory):
+during a session, Claude decides on its own what to save, including notes
+about you (`user`, `feedback`), into markdown files that load at the start
+of later sessions. That overlaps with what Kenna does. What's left for Kenna:
+
+- **Scope.** Auto memory is per repository and machine-local. A fact Claude
+  learns about you in one project isn't visible in another. Kenna's
+  personal-scope memories are returned everywhere.
+- **Coverage.** Auto memory only keeps what the in-session model chose to
+  write down. Kenna re-reads the full transcripts afterward, so it can pick
+  up things nobody flagged at the time.
+- **Retrieval.** Auto memory loads the first 200 lines / 25KB of
+  `MEMORY.md` into every session. Kenna is queried on demand, so the store
+  can grow without costing context.
+
+Auto memory's `autoMemoryDirectory` setting can point every project at one
+shared directory, which addresses the scope gap without Kenna, at the cost
+of all projects sharing one 200-line index.
+
+On the author's own data, auto memory already held about half of the
+memories Kenna rated useful. Kenna's additions were mostly project-level
+preferences the session never saved. Numbers and method are in
+[`kenna-design.md`](kenna-design.md#overlap-with-auto-memory-measured).
 
 ## Status
 

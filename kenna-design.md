@@ -22,18 +22,87 @@ and what you keep coming back to — then makes that understanding available
 at the start of every future session.
 
 It is NOT a cross-project note-taking system. It is NOT a replacement for
-Claude Code's built-in project memory (`/remember`, `CLAUDE.md`, auto memory).
-Those handle explicit, project-scoped knowledge that the user consciously
-chooses to persist.
+Claude Code's built-in memory (`CLAUDE.md`, auto memory).
 
-Kenna is the *implicit* layer — the things that accumulate naturally from
-working together over time. The goal is continuity: sessions that feel like
-picking up a conversation with someone who knows you, rather than introducing
-yourself to a stranger every time.
+Kenna captures the things that accumulate naturally from working together
+over time. The goal is continuity: sessions that feel like picking up a
+conversation with someone who knows you, rather than introducing yourself to
+a stranger every time.
 
-**Relationship to Claude Code's built-in memory:**
-- Claude Code's project memory → explicit, project-scoped, user-initiated
-- Kenna → implicit, user-scoped, background-extracted, available everywhere
+### Relationship to Claude Code's built-in memory
+
+When Kenna was designed, Claude Code's memory was explicit: `CLAUDE.md` and
+`/remember`, written because the user asked. That has changed. Auto memory
+(on by default) has the model decide mid-session what to save, using four
+note types: `user`, `feedback`, `project`, `reference`. `user` and `feedback`
+overlap directly with Kenna's personal-scope categories. "Kenna is the
+implicit layer" is no longer a distinguishing claim on its own.
+
+| | Auto memory | Kenna |
+| :- | :- | :- |
+| Who decides what's saved | The session model, while working | Local LLMs, after the session, over the full transcript |
+| Scope | Per git repository, machine-local | Personal scope everywhere; project scope tagged by source |
+| Loaded how | First 200 lines / 25KB of `MEMORY.md` every session; topic files read on demand | `kenna_recall` / `kenna search`, on demand |
+| Cross-project synthesis | None | Settling pass (`kenna settle`) |
+| Storage | Plain markdown, user-editable | SQLite + vectors; `kenna list/show/export` |
+
+The remaining distinguishing claims are:
+
+1. **Cross-project reach.** A `user` note saved in one repo's auto memory is
+   invisible in every other repo. Partly addressable without Kenna:
+   `autoMemoryDirectory` in user settings points all projects at one
+   directory, but then every project shares one 200-line index.
+2. **Retrospective extraction.** Auto memory keeps only what the in-session
+   model chose to write. Kenna sees everything said, including things that
+   only look durable in hindsight or across several sessions.
+3. **Pattern synthesis.** Settling promotes patterns that recur across
+   projects; auto memory has no equivalent.
+
+See [Overlap with auto memory (measured)](#overlap-with-auto-memory-measured)
+for how much of Kenna's store auto memory already holds.
+
+### Overlap with auto memory (measured)
+
+Comparison run 2026-11-18 on the author's machine. All 348 accepted Kenna
+memories (June–November 2026) were checked against every auto-memory file
+(97 files across 17 repos; auto memory had been active since March, so it
+covered the whole window). Each Kenna memory was graded by an LLM judge for
+coverage (same substance in the same repo's auto memory / only in another
+repo / partial / missing) and for value (useful vs. vague, generic, or a
+one-off). These are model judgments, not hand labels.
+
+| | Useful | Low value | Total |
+| :- | -: | -: | -: |
+| Same repo's auto memory has it | 95 | 16 | 111 |
+| Only another repo has it | 10 | 4 | 14 |
+| Partial | 35 | 58 | 93 |
+| Missing | 58 | 72 | 130 |
+| **Total** | 198 | 150 | 348 |
+
+What this says:
+
+- **Auto memory already has about half of Kenna's useful memories.** 95 of 198
+  are in the same repo's auto memory; another 35 are partially there.
+- **Kenna's unique contribution is mostly project-scoped preferences the
+  session model didn't save.** Of the 58 useful-and-missing, 56 are project
+  scope. They cluster in repos where auto memory is thin or absent
+  (12 of the 58 come from repos with no auto-memory files at all): persona
+  and tone rules, writing and diagram preferences, commit granularity.
+- **Personal scope, Kenna's headline feature, adds little that's new.** Of 51
+  accepted personal memories, 20 are already in some auto-memory file, 26
+  were judged low value, and 2 are useful and missing. What Kenna does add is
+  reach: those 20 facts each live in one repo's auto memory, and Kenna
+  returns them in every repo.
+- **43% of accepted memories were judged low value.** Most are trait-style
+  generalizations ("comfortable with systemd") where auto memory holds the
+  specific fact behind them, which is more useful. A few are wrong: a
+  preference that was later reversed, a guess the assistant made recorded as
+  the user's view, in-game activity read as real-world expertise,
+  misattributed source project. In the reversed-preference case, auto memory
+  recorded the reversal and Kenna's supersession didn't catch it.
+
+Not measured: the reverse direction (what auto memory has that Kenna
+missed), and whether either store changes session behavior.
 
 ---
 
@@ -442,10 +511,10 @@ operations happen via the background reconciler or the CLI.
 }
 ```
 
-**Why read-only**: Claude Code already has robust project-scoped memory
-via `/remember` and `CLAUDE.md`. Kenna's value is the *implicit* knowledge
-that accumulates without conscious effort. Write tools are roadmapped but
-deferred until v1 proves the concept.
+**Why read-only**: Claude Code already handles in-session writes: `CLAUDE.md`
+for instructions, auto memory for notes the model decides to keep. A Kenna
+write tool would duplicate auto memory. Kenna's job is what gets extracted
+after the fact.
 
 **Superseded filtering**: Results exclude memories with `superseded_by` set.
 Only the latest version of each fact is returned.
@@ -545,10 +614,12 @@ Call `kenna_recall` at the start of a session with a brief description of
 what we're about to work on. You can also call it mid-session when context
 about past work, preferences, or decisions would be useful.
 
-Kenna memories are separate from your built-in project memory. Use /remember
-and CLAUDE.md for project-specific notes you're asked to store. Kenna memories
-are background knowledge about the user that accumulates automatically — treat
-them as things you already know, not as search results to present.
+Kenna memories are separate from your auto memory and CLAUDE.md, and Kenna
+is read-only: keep saving notes to auto memory as usual. Kenna memories are
+background knowledge about the user extracted from past sessions in every
+project. Treat them as things you already know, not as search results to
+present. If a Kenna memory conflicts with auto memory or CLAUDE.md, the
+latter win; they were written deliberately in this project.
 ```
 
 ---
@@ -581,8 +652,10 @@ Database grows unbounded. Needs:
 ### MCP Write Tools
 - `kenna_store` — explicit "remember this" from within a session
 - `kenna_forget` — "forget that" from within a session
-- Deferred until the boundary between Kenna and Claude Code's native
-  memory is better understood through real usage.
+- Likely unnecessary: auto memory now covers in-session "remember this",
+  and its files are plain markdown the user can edit. A `kenna_forget` may
+  still be worth having: deleting a fact from auto memory doesn't remove
+  Kenna's copy, which was extracted from the transcript independently.
 
 ### Session-Start Hook
 Use Claude Code's hook system to auto-run `kenna_recall` at session start,
